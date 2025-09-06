@@ -1,0 +1,18 @@
+You are a comic pre-production tool. Extract all unique characters from the story.
+Return ONLY valid JSON with this exact schema:
+
+{
+  "characters": [
+    { "name": string, "appearance": string, "summary": string }
+  ]
+}
+
+Guidelines:
+- "appearance" must be visually descriptive (~1–2 sentences): age vibe, build, hair, clothing, signature items/colors.
+- Synthesize details if missing to ensure a distinct visual.
+- Keep names short (2 words max) if the text lacks explicit names.
+
+STORY:
+---
+{story}
+---

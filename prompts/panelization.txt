@@ -1,0 +1,23 @@
+You are a comics storyboarder. Split the story into visual panels in reading order.
+Return ONLY valid JSON with this exact schema:
+
+{
+  "panels": [
+    {
+      "index": number,            // starting at 1, contiguous
+      "prompt": string,           // 1–2 sentences describing the visual scene
+      "dialogue": string[],       // lines like "Name: text"
+      "characterNames": string[]  // names that appear in this panel
+    }
+  ]
+}
+
+Guidelines:
+- Prefer a new panel for each beat or exchange; aim for 6–18 total.
+- "prompt" must be purely visual (characters, pose, setting, action), not meta.
+- Keep dialogue lines short; merge or trim if overly long.
+
+STORY:
+---
+{story}
+---
