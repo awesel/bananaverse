@@ -43,7 +43,9 @@ Guidelines:
 - "prompt" must be purely visual (characters, pose, setting, action), not meta.
 - "dialogue" uses structured objects with speaker/text/whisper fields.
 - Keep dialogue text short; merge or trim if overly long.
-- "narration" should contain any narrative text that describes what's happening (like "(Narration) A faint glow pulses from the distant tower."). Set to null if there's no narration for the panel.
+- When a panel has no dialogue, include "narration" with a brief 1-sentence description of what is happening, preferably lifted verbatim from the original story text.
+- Narration should explain the action or context that readers need to understand the panel.
+- Only use narration when there is no dialogue; panels with dialogue should not have narration unless absolutely necessary for clarity.
 - "sceneName" should match one of the scene names from the list above.
 - IMPORTANT: Maintain character continuity - if characters are present in a scene, include them in "characterNames" even for silent panels unless they explicitly leave or are not visible. Err on the side of including characters for better visual continuity.
 - When in doubt about character presence, include them rather than exclude them to maintain story flow and character presence.
@@ -59,18 +61,6 @@ Guidelines:
   * "establishing_shot" - wide view to establish location
   * "reaction_shot" - close-up showing character's emotional response
 
-CHARACTER POSITIONING GUIDELINES:
-- For characterPositions, specify where each character appears in the frame:
-  * x: 0.0 = far left, 0.5 = center, 1.0 = far right
-  * y: 0.0 = top of frame, 0.5 = middle, 1.0 = bottom of frame
-  * prominence: "foreground" (main focus), "background" (visible but secondary), "off_screen" (present but not visible)
-- Consider the perspective when positioning:
-  * "close_up": single character at (0.5, 0.4), others off_screen
-  * "medium_shot": 1-2 characters, spread horizontally (0.3, 0.4) and (0.7, 0.4)
-  * "wide_shot": multiple characters spread across frame
-  * "character_focus": focused character at (0.5, 0.4), others in background positions
-- Speech bubbles will be placed near the speaker's position, so ensure speakers are visible (not off_screen)
-- For dialogue scenes, position speakers where they can face each other naturally
 
 STORY:
 ---

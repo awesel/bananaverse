@@ -9,7 +9,7 @@ from typing import Optional, Dict, Any, Generator
 from flask import Flask, request, Response, send_file, jsonify
 from dotenv import load_dotenv
 
-from main import run_pipeline, slugify, create_comic_layout, PANEL_SIZE, GAIC, API_KEY, PromptLogger, extract_characters, extract_scenes, panelize_story, audit_and_patch_cast, patch_panels_for_entities, validate_panel_speakers, build_char_ref_prompt, build_scene_ref_prompt, build_panel_base_instruction, pad_to_square, image_bytes_to_pil, pil_to_png_bytes, resize_to_fill, add_text_rectangles_to_panel, generate_comic_title, create_comic_layout, ensure_dir, USE_COMBINED_PANELS
+from main import run_pipeline, slugify, create_comic_layout, PANEL_SIZE, GAIC, API_KEY, FAL_API_KEY, PromptLogger, extract_characters, extract_scenes, panelize_story, audit_and_patch_cast, patch_panels_for_entities, validate_panel_speakers, build_char_ref_prompt, build_scene_ref_prompt, build_panel_base_instruction, pad_to_square, image_bytes_to_pil, pil_to_png_bytes, resize_to_fill, add_text_rectangles_to_panel, generate_comic_title, create_comic_layout, ensure_dir, USE_COMBINED_PANELS, generate_story_from_user_input
 
 # Load environment variables
 load_dotenv()
@@ -171,10 +171,28 @@ def watcher(run_dir: Path, events: "queue.Queue[Dict[str, Any]]", stop_flag: thr
             # Emit lightweight assets listing even before manifest exists
             chars_dir = run_dir / "characters"
             scenes_dir = run_dir / "scenes"
-            char_files = sorted([str(p.relative_to(run_dir)) for p in (
-                chars_dir.glob("*.png") if chars_dir.exists() else [])])
-            scene_files = sorted([str(p.relative_to(run_dir)) for p in (
-                scenes_dir.glob("*.png") if scenes_dir.exists() else [])])
+
+            # Get valid PNG files that are fully written and readable
+            def get_valid_png_files(directory):
+                if not directory.exists():
+                    return []
+                valid_files = []
+                for p in directory.glob("*.png"):
+                    try:
+                        # Verify file is fully written by attempting to read a few bytes
+                        with open(p, 'rb') as f:
+                            # Check PNG header
+                            header = f.read(8)
+                            if len(header) == 8 and header.startswith(b'\x89PNG\r\n\x1a\n'):
+                                valid_files.append(str(p.relative_to(run_dir)))
+                    except (OSError, IOError):
+                        # File not ready yet, skip it
+                        continue
+                return sorted(valid_files)
+
+            char_files = get_valid_png_files(chars_dir)
+            scene_files = get_valid_png_files(scenes_dir)
+
             if len(char_files) != last_char_count or len(scene_files) != last_scene_count:
                 last_char_count = len(char_files)
                 last_scene_count = len(scene_files)
@@ -196,11 +214,27 @@ def watcher(run_dir: Path, events: "queue.Queue[Dict[str, Any]]", stop_flag: thr
             time.sleep(1)
 
 
-def run_pipeline_with_events(story_text: str, out_root: Path, events: "queue.Queue[Dict[str, Any]]"):
+def run_pipeline_with_events(story_text: str, out_root: Path, events: "queue.Queue[Dict[str, Any]]", user_input: str = None):
     """Run the pipeline with step progress events."""
     ensure_dir(out_root)
     logger = PromptLogger(out_root / "prompts_used.txt")
     g = GAIC(API_KEY)
+
+    # Step 0: Generate story if needed
+    if user_input:
+        events.put({"type": "step", "step": "story_generation",
+                   "message": "Generating story from your request..."})
+        story_text = generate_story_from_user_input(g, user_input, logger)
+        events.put({"type": "step_complete", "step": "story_generation",
+                   "message": f"Story generated ({len(story_text)} characters)"})
+
+    # Step 0.5: Generate comic title early
+    events.put({"type": "step", "step": "title_generation",
+               "message": "Generating comic title..."})
+    comic_title = generate_comic_title(g, story_text)
+    logger.log("COMIC_TITLE_GENERATION", f"Generated title: {comic_title}")
+    events.put({"type": "step_complete", "step": "title_generation",
+               "message": f"Title generated: {comic_title}"})
 
     # Step 1: Extract characters
     events.put({"type": "step", "step": "characters",
@@ -388,8 +422,7 @@ def run_pipeline_with_events(story_text: str, out_root: Path, events: "queue.Que
     # Generate final comic
     events.put({"type": "step", "step": "final",
                "message": "Creating final comic layout..."})
-    comic_title = generate_comic_title(g, story_text)
-    logger.log("COMIC_TITLE_GENERATION", f"Generated title: {comic_title}")
+    # Title was already generated earlier
 
     # Collect all final panel images
     final_panel_bytes = []
@@ -410,7 +443,7 @@ def run_pipeline_with_events(story_text: str, out_root: Path, events: "queue.Que
                "message": "Comic generation complete!"})
 
 
-def pipeline_worker(story_text: str, run_dir: Path, events: "queue.Queue[Dict[str, Any]]", stop_flag: threading.Event):
+def pipeline_worker(story_text: str, run_dir: Path, events: "queue.Queue[Dict[str, Any]]", stop_flag: threading.Event, user_input: str = None):
     try:
         # Emit start event
         events.put({"type": "start", "run": str(run_dir.name)})
@@ -420,7 +453,7 @@ def pipeline_worker(story_text: str, run_dir: Path, events: "queue.Queue[Dict[st
         wt.start()
 
         # Run pipeline with step tracking
-        run_pipeline_with_events(story_text, run_dir, events)
+        run_pipeline_with_events(story_text, run_dir, events, user_input)
         events.put({"type": "done"})
     except Exception as e:
         events.put({"type": "error", "message": str(e)})
@@ -437,9 +470,22 @@ def index() -> Response:
 @app.route("/api/start", methods=["POST"])
 def api_start():
     data = request.get_json(force=True)
-    story_text: str = data.get("story", "").strip()
-    if not story_text:
-        return jsonify({"error": "Story text required"}), 400
+
+    # Handle both story generation and direct story input
+    generate_story = data.get("generate_story", False)
+
+    if generate_story:
+        user_input = data.get("user_input", "").strip()
+        if not user_input:
+            return jsonify({"error": "User input required for story generation"}), 400
+        story_text = ""  # Will be generated in the pipeline
+        slug_source = user_input
+    else:
+        story_text = data.get("story", "").strip()
+        if not story_text:
+            return jsonify({"error": "Story text required"}), 400
+        user_input = None
+        slug_source = story_text
 
     # Stop any previous run
     if state.thread and state.thread.is_alive():
@@ -447,7 +493,7 @@ def api_start():
         state.thread.join(timeout=1)
 
     # Create run directory
-    slug = slugify(story_text.splitlines()[0] or "story")
+    slug = slugify(slug_source.splitlines()[0] or "story")
     run_id = f"{slug}-{int(time.time())}"
     run_dir = OUTPUT_DIR / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -457,7 +503,7 @@ def api_start():
 
     # Launch worker
     t = threading.Thread(target=pipeline_worker, args=(
-        story_text, run_dir, state.events, state.stop_flag), daemon=True)
+        story_text, run_dir, state.events, state.stop_flag, user_input), daemon=True)
     t.start()
     state.thread = t
     return jsonify({"run": run_id})

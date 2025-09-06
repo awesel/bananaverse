@@ -15,15 +15,25 @@ from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 from PIL import Image, ImageDraw, ImageFont
 
-# Google AI SDK
+# Google AI SDK (for text generation only)
 from google import genai
 from google.genai import types
+
+# Fal AI SDK for image generation
+import fal_client
+import requests
 
 # ------------------ ENV & CONFIG ------------------
 load_dotenv()
 API_KEY = os.getenv("GEMINI_API_KEY")
 if not API_KEY:
     raise RuntimeError("Missing GEMINI_API_KEY in .env")
+
+# Fal API setup
+FAL_API_KEY = os.getenv("FAL_API_KEY")
+if not FAL_API_KEY:
+    raise RuntimeError("Missing FAL_API_KEY in .env")
+os.environ["FAL_KEY"] = FAL_API_KEY
 
 # Models (override via env if your account uses different names)
 # text planning
@@ -63,6 +73,10 @@ SCENE_REF_NANO_TPL = load_prompt("scene_ref_nano")
 PANEL_BASE_NANO_TPL = load_prompt("panel_base_nano")
 PANEL_EDIT_NANO_TPL = load_prompt("panel_edit_nano")
 PANEL_COMBINED_NANO_TPL = load_prompt("panel_combined_nano")
+
+# Load custom story generation template
+CUSTOM_STORY_TEMPLATE = (Path(__file__).parent / "stories" /
+                         "custom_story.txt").read_text(encoding="utf-8")
 
 # ------------------ DATA MODELS -------------------
 
@@ -290,29 +304,30 @@ def find_best_text_position_from_panel_data(speaker: str, panel: Panel,
     return (pos_x, pos_y)
 
 
-def find_bottom_right_position(dialog_index: int, used_areas: List[tuple],
-                               rect_width: int, rect_height: int,
-                               img_width: int, img_height: int) -> tuple:
+def find_right_side_position(dialog_index: int, used_areas: List[tuple],
+                             rect_width: int, rect_height: int,
+                             img_width: int, img_height: int) -> tuple:
     """
-    Find position for dialog at bottom right, stacking multiple dialogs vertically.
+    Find position for dialog on the right side, stacking multiple dialogs vertically.
+    First dialogue appears at top, subsequent ones below for natural reading order.
     """
-    # Base position: bottom right with some margin
+    # Base position: top right with some margin (changed from bottom right)
     margin = 10
     base_x = img_width - rect_width - margin
-    base_y = img_height - rect_height - margin
+    base_y = margin  # Start from top instead of bottom
 
-    # For multiple dialogs, stack them vertically upward
+    # For multiple dialogs, stack them vertically downward
     vertical_spacing = 5  # Small gap between dialog boxes
 
     # Calculate vertical offset based on dialog index
-    # Each subsequent dialog goes higher up
+    # Each subsequent dialog goes lower down (natural reading order)
     vertical_offset = dialog_index * (rect_height + vertical_spacing)
 
     pos_x = base_x
-    pos_y = base_y - vertical_offset
+    pos_y = base_y + vertical_offset  # Add offset instead of subtract
 
-    # Ensure the dialog doesn't go off the top of the panel
-    pos_y = max(margin, pos_y)
+    # Ensure the dialog doesn't go off the bottom of the panel
+    pos_y = min(pos_y, img_height - rect_height - margin)
 
     # Ensure it doesn't go off the left side either
     pos_x = max(margin, min(pos_x, img_width - rect_width - margin))
@@ -359,7 +374,7 @@ def add_text_rectangles_to_panel(panel_img: Image.Image, panel: Panel) -> Image.
 
     # Try to load a good font for speech bubbles
     font = None
-    font_size = 28  # Increased from 20 for better readability
+    font_size = 46  # Increased by 66% from 28 for better readability
     try:
         font_paths = [
             "/System/Library/Fonts/Helvetica.ttc",  # macOS
@@ -411,8 +426,8 @@ def add_text_rectangles_to_panel(panel_img: Image.Image, panel: Panel) -> Image.
         rect_width = max_line_width + 2 * padding
         rect_height = total_text_height + 2 * padding
 
-        # Position dialog at bottom right (diagonal from narrator text at top left)
-        rect_x, rect_y = find_bottom_right_position(
+        # Position dialog on right side (diagonal from narrator text at top left)
+        rect_x, rect_y = find_right_side_position(
             i, used_areas, rect_width, rect_height, width, height
         )
 
@@ -753,169 +768,154 @@ class GAIC:
 
     def generate_image_with_nano(self, prompt: str, base_image: Optional[bytes] = None, model: str = NANO_IMAGE_MODEL) -> bytes:
         """
-        Generate an image using nano banana flash model.
-        If base_image is provided, edit that image. Otherwise, generate from scratch using a white canvas.
+        Generate an image using Fal AI nano banana model.
+        If base_image is provided, edit that image. Otherwise, generate from scratch.
         Returns PNG bytes.
         """
-        parts: List[Any] = []
-
-        if base_image:
-            # Edit mode: start with base image
-            parts.append({"inline_data": {"mime_type": "image/png",
-                         "data": base64.b64encode(base_image).decode("utf-8")}})
-        else:
-            # Generate from scratch: create a white canvas as base
-            white_canvas = Image.new("RGB", (PANEL_SIZE, PANEL_SIZE), "white")
-            white_canvas_bytes = pil_to_png_bytes(white_canvas)
-            parts.append({"inline_data": {"mime_type": "image/png",
-                         "data": base64.b64encode(white_canvas_bytes).decode("utf-8")}})
-
-        parts.append(prompt)
-
         try:
-            resp = self.client.models.generate_content(
-                model=model, contents=parts)
-        except Exception as e:
-            print(f"[ERROR] API call failed: {e}")
-            raise RuntimeError(f"Nano image generation API call failed: {e}")
+            if base_image:
+                # Edit mode: use image-to-image editing
+                base64_data = base64.b64encode(base_image).decode('utf-8')
+                data_uri = f"data:image/png;base64,{base64_data}"
 
-        # Debug: print response structure
-        print(f"[DEBUG] Response type: {type(resp)}")
-        print(
-            f"[DEBUG] Response hasattr candidates: {hasattr(resp, 'candidates')}")
+                result = fal_client.subscribe(
+                    "fal-ai/nano-banana/edit",
+                    arguments={
+                        "prompt": prompt,
+                        "image_urls": [data_uri],
+                        "num_images": 1,
+                        "output_format": "png"
+                    },
+                    with_logs=True,
+                )
+            else:
+                # Generate from scratch: text-to-image
+                result = fal_client.subscribe(
+                    "fal-ai/nano-banana",
+                    arguments={
+                        "prompt": prompt,
+                        "num_images": 1,
+                        "output_format": "png"
+                    },
+                    with_logs=True,
+                )
 
-        if not hasattr(resp, 'candidates') or not resp.candidates:
-            print(f"[ERROR] No candidates in response: {resp}")
-            raise RuntimeError("Nano image generation returned no candidates.")
+            if result.get('images') and len(result['images']) > 0:
+                image_url = result['images'][0]['url']
 
-        print(f"[DEBUG] Candidates: {len(resp.candidates)}")
-
-        for i, cand in enumerate(resp.candidates):
-            print(f"[DEBUG] Candidate {i}: type={type(cand)}")
-            if not hasattr(cand, 'content'):
-                print(f"[DEBUG] Candidate {i} has no content attribute")
-                continue
-
-            print(f"[DEBUG] Candidate {i} content: type={type(cand.content)}")
-            if not hasattr(cand.content, 'parts') or not cand.content.parts:
-                print(f"[DEBUG] Candidate {i} content has no parts")
-                continue
-
-            print(f"[DEBUG] Candidate {i} has {len(cand.content.parts)} parts")
-            for j, part in enumerate(cand.content.parts):
-                print(f"[DEBUG] Part {j}: type={type(part)}")
-                print(
-                    f"[DEBUG] Part {j} hasattr inline_data: {hasattr(part, 'inline_data')}")
-
-                if hasattr(part, "inline_data") and part.inline_data:
+                # Download the image
+                response = requests.get(image_url)
+                if response.status_code == 200:
+                    # Validate that it's actually image data
+                    test_img = Image.open(io.BytesIO(response.content))
                     print(
-                        f"[DEBUG] Part {j} inline_data: type={type(part.inline_data)}")
-                    print(
-                        f"[DEBUG] Part {j} inline_data hasattr data: {hasattr(part.inline_data, 'data')}")
-
-                    if hasattr(part.inline_data, "data") and part.inline_data.data:
-                        try:
-                            # Check if data is already bytes or if it's base64 string
-                            if isinstance(part.inline_data.data, bytes):
-                                image_data = part.inline_data.data
-                                print(
-                                    f"[DEBUG] Got raw bytes data length: {len(image_data)} bytes")
-                            else:
-                                image_data = base64.b64decode(
-                                    part.inline_data.data)
-                                print(
-                                    f"[DEBUG] Decoded base64 data length: {len(image_data)} bytes")
-
-                            print(
-                                f"[DEBUG] First 20 bytes as hex: {image_data[:20].hex()}")
-
-                            # Check for common image format headers
-                            if image_data.startswith(b'\x89PNG'):
-                                print(f"[DEBUG] Detected PNG format")
-                            elif image_data.startswith(b'\xff\xd8\xff'):
-                                print(f"[DEBUG] Detected JPEG format")
-                            elif image_data.startswith(b'GIF'):
-                                print(f"[DEBUG] Detected GIF format")
-                            elif image_data.startswith(b'RIFF') and b'WEBP' in image_data[:20]:
-                                print(f"[DEBUG] Detected WebP format")
-                            else:
-                                print(
-                                    f"[DEBUG] Unknown format - first 100 bytes: {image_data[:100]}")
-
-                            # Validate that it's actually image data by trying to open it
-                            try:
-                                test_img = Image.open(io.BytesIO(image_data))
-                                print(
-                                    f"[DEBUG] Successfully validated image: {test_img.size}, {test_img.mode}")
-                                return image_data
-                            except Exception as img_error:
-                                print(
-                                    f"[ERROR] Invalid image data: {img_error}")
-                                print(
-                                    f"[DEBUG] Data length: {len(image_data)} bytes")
-                                continue
-
-                        except Exception as decode_error:
-                            print(
-                                f"[ERROR] Failed to process data: {decode_error}")
-                            print(
-                                f"[DEBUG] Raw data type: {type(part.inline_data.data)}")
-                            print(
-                                f"[DEBUG] Raw data length: {len(part.inline_data.data) if hasattr(part.inline_data.data, '__len__') else 'no length'}")
-                            continue
+                        f"[DEBUG] Fal image generated: {test_img.size}, {test_img.mode}")
+                    return response.content
                 else:
-                    print(
-                        f"[DEBUG] Part {j} has no inline_data or inline_data is None")
-                    if hasattr(part, 'text'):
-                        print(
-                            f"[DEBUG] Part {j} text content: {part.text[:200]}...")
+                    raise RuntimeError(
+                        f"Failed to download image from Fal: {response.status_code}")
+            else:
+                raise RuntimeError("Fal API returned no images")
 
-        raise RuntimeError(
-            "Nano image generation returned no valid image data.")
+        except Exception as e:
+            print(f"[ERROR] Fal API call failed: {e}")
+            raise RuntimeError(f"Fal image generation failed: {e}")
 
     def edit_image_with_nano(self, base_image: bytes, instruction: str, ref_images: Optional[List[bytes]] = None,
                              model: str = NANO_EDIT_MODEL) -> bytes:
-        parts: List[Any] = []
-        parts.append({"inline_data": {"mime_type": "image/png",
-                     "data": base64.b64encode(base_image).decode("utf-8")}})
-        if ref_images:
-            for b in ref_images:
-                parts.append({"inline_data": {"mime_type": "image/png",
-                             "data": base64.b64encode(b).decode("utf-8")}})
-        parts.append(instruction)
-
+        """
+        Edit an image using Fal AI nano banana edit model.
+        ref_images are additional reference images to guide the editing.
+        Returns PNG bytes.
+        """
         try:
-            resp = self.client.models.generate_content(
-                model=model, contents=parts)
+            # Optimize image sizes to avoid request body size limits
+            def optimize_image_for_api(img_bytes: bytes, max_size: int = 512) -> bytes:
+                """Compress image to reduce API payload size"""
+                img = Image.open(io.BytesIO(img_bytes))
+                if img.size[0] > max_size or img.size[1] > max_size:
+                    img.thumbnail((max_size, max_size), Image.LANCZOS)
+
+                # Convert to JPEG for smaller size (API accepts JPEG)
+                output = io.BytesIO()
+                if img.mode in ('RGBA', 'LA', 'P'):
+                    # Convert to RGB for JPEG
+                    background = Image.new('RGB', img.size, (255, 255, 255))
+                    if img.mode == 'P':
+                        img = img.convert('RGBA')
+                    background.paste(img, mask=img.split(
+                    )[-1] if img.mode in ('RGBA', 'LA') else None)
+                    img = background
+                img.save(output, format='JPEG', quality=85, optimize=True)
+                return output.getvalue()
+
+            # Optimize base image
+            optimized_base = optimize_image_for_api(base_image)
+            base64_data = base64.b64encode(optimized_base).decode('utf-8')
+            image_urls = [f"data:image/jpeg;base64,{base64_data}"]
+
+            # Add reference images if provided, but limit to 1-2 most important ones
+            if ref_images:
+                # Limit to first 2 reference images to avoid payload size issues
+                for ref_img in ref_images[:2]:
+                    optimized_ref = optimize_image_for_api(ref_img)
+                    ref_base64 = base64.b64encode(
+                        optimized_ref).decode('utf-8')
+                    image_urls.append(f"data:image/jpeg;base64,{ref_base64}")
+
+            # Enhanced prompt with reference image information
+            enhanced_instruction = instruction
+            if ref_images:
+                enhanced_instruction += " Use the additional reference images to maintain character consistency and visual style."
+
+            result = fal_client.subscribe(
+                "fal-ai/nano-banana/edit",
+                arguments={
+                    "prompt": enhanced_instruction,
+                    "image_urls": image_urls,
+                    "num_images": 1,
+                    "output_format": "png"
+                },
+                with_logs=True,
+            )
+
+            if result.get('images') and len(result['images']) > 0:
+                image_url = result['images'][0]['url']
+
+                # Download the edited image
+                response = requests.get(image_url)
+                if response.status_code == 200:
+                    # Validate image data
+                    test_img = Image.open(io.BytesIO(response.content))
+                    print(
+                        f"[DEBUG] Fal image edited: {test_img.size}, {test_img.mode}")
+                    return response.content
+                else:
+                    raise RuntimeError(
+                        f"Failed to download edited image from Fal: {response.status_code}")
+            else:
+                raise RuntimeError("Fal API returned no edited images")
+
         except Exception as e:
-            print(f"[ERROR] Nano edit API call failed: {e}")
-            raise RuntimeError(f"Nano edit API call failed: {e}")
+            print(f"[ERROR] Fal edit API call failed: {e}")
+            raise RuntimeError(f"Fal image editing failed: {e}")
 
-        if not hasattr(resp, 'candidates') or not resp.candidates:
-            raise RuntimeError("Nano edit returned no candidates.")
 
-        for cand in resp.candidates:
-            if not hasattr(cand, 'content') or not cand.content.parts:
-                continue
+def generate_story_from_user_input(g: GAIC, user_input: str, log: PromptLogger) -> str:
+    """Generate a story based on user input using the custom story template."""
+    prompt = fill(CUSTOM_STORY_TEMPLATE, user_input=user_input)
+    log.log("STORY_GENERATION_PROMPT", prompt)
 
-            for part in cand.content.parts:
-                if hasattr(part, "inline_data") and part.inline_data and hasattr(part.inline_data, "data") and part.inline_data.data:
-                    try:
-                        # Handle both bytes and base64 string data
-                        if isinstance(part.inline_data.data, bytes):
-                            image_data = part.inline_data.data
-                        else:
-                            image_data = base64.b64decode(
-                                part.inline_data.data)
-                        # Validate image data
-                        test_img = Image.open(io.BytesIO(image_data))
-                        return image_data
-                    except Exception as e:
-                        print(
-                            f"[ERROR] Invalid image data in edit response: {e}")
-                        continue
+    story = g.generate_text(prompt)
+    log.log("STORY_GENERATION_RESPONSE", story)
 
-        raise RuntimeError("Nano edit returned no valid image data.")
+    # Extract just the story part if there's a title
+    lines = story.strip().split('\n')
+    # Skip title line if it looks like a title (short line followed by empty line)
+    if len(lines) > 2 and len(lines[0].strip()) < 100 and lines[1].strip() == '':
+        story = '\n'.join(lines[2:]).strip()
+
+    return story
 
 
 def generate_comic_title(g: GAIC, story: str) -> str:
@@ -1099,10 +1099,24 @@ Mina: If it's another warning, I'm going to scream.
 """
 
 
-def run_pipeline(story_text: str, out_root: Path):
+def run_pipeline(story_text: str, out_root: Path, user_input: str = None):
+    """
+    Run the comic generation pipeline.
+
+    Args:
+        story_text: The story text to use (if user_input is None)
+        out_root: Output directory
+        user_input: If provided, generate story from this input instead of using story_text
+    """
     ensure_dir(out_root)
     logger = PromptLogger(out_root / "prompts_used.txt")
     g = GAIC(API_KEY)
+
+    # Generate story if user_input is provided
+    if user_input:
+        print(">> Generating story from user input...")
+        story_text = generate_story_from_user_input(g, user_input, logger)
+        print(f"   Generated story: {len(story_text)} characters")
 
     print(">> Planning with Gemini 2.5...")
     characters = extract_characters(g, story_text, logger)

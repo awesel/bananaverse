@@ -1,0 +1,1 @@
+Write a story in third person present tense that incorporates the user's request for a story in their query. The user asked for you to  {{user_input}}. infer only minimally, keep POV consistent, show-don’t-tell, avoid clichés, and output just a title and the story.

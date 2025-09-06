@@ -246,6 +246,18 @@
     <header>
       <h1>BananaVerse</h1>
       <div class="status" id="status">Idle</div>
+      <div
+        class="comic-title"
+        id="comicTitle"
+        style="
+          display: none;
+          font-size: 18px;
+          font-weight: bold;
+          color: #2c5aa0;
+          margin-top: 8px;
+          text-align: center;
+        "
+      ></div>
     </header>
     <div class="flowchart">
       <div class="step" id="step-story">
@@ -270,7 +282,44 @@
     </div>
     <div class="container">
       <div class="panel">
-        <h3>Enter Story</h3>
+        <h3>Story Input</h3>
+        <div class="row" style="margin-top: 0; margin-bottom: 12px">
+          <label
+            style="
+              display: flex;
+              align-items: center;
+              gap: 8px;
+              margin-bottom: 0;
+            "
+          >
+            <input
+              type="radio"
+              name="inputMode"
+              id="manualMode"
+              value="manual"
+              checked
+              style="margin: 0"
+            />
+            <span>Enter Story Manually</span>
+          </label>
+          <label
+            style="
+              display: flex;
+              align-items: center;
+              gap: 8px;
+              margin-bottom: 0;
+            "
+          >
+            <input
+              type="radio"
+              name="inputMode"
+              id="generateMode"
+              value="generate"
+              style="margin: 0"
+            />
+            <span>Generate Story with AI</span>
+          </label>
+        </div>
         <textarea
           id="story"
           placeholder="Paste or write your story here..."
@@ -305,6 +354,7 @@
       const statusEl = document.getElementById("status");
       const logEl = document.getElementById("log");
       const runInfoEl = document.getElementById("runInfo");
+      const comicTitleEl = document.getElementById("comicTitle");
       const startBtn = document.getElementById("startBtn");
       const storyEl = document.getElementById("story");
       const finalImg = document.getElementById("finalImg");
@@ -313,6 +363,8 @@
       const sceneSelect = document.getElementById("sceneSelect");
       const charView = document.getElementById("charView");
       const sceneView = document.getElementById("sceneView");
+      const manualMode = document.getElementById("manualMode");
+      const generateMode = document.getElementById("generateMode");
 
       let currentRun = null;
       let manifest = null;
@@ -327,6 +379,19 @@
 
       let logLines = [];
       const MAX_LOG_LINES = 15; // Keep only the most recent 15 lines
+
+      // Mode switching logic
+      function updateInputMode() {
+        if (generateMode.checked) {
+          storyEl.placeholder =
+            "Describe what kind of story you want (e.g., 'write a story about a detective solving a mysterious case')...";
+        } else {
+          storyEl.placeholder = "Paste or write your story here...";
+        }
+      }
+
+      manualMode.addEventListener("change", updateInputMode);
+      generateMode.addEventListener("change", updateInputMode);
 
       function log(line, type = "info") {
         const timestamp = new Date().toLocaleTimeString();
@@ -465,6 +530,7 @@
 
               // Map step names to our UI steps - only advance when asset generation starts
               const stepMap = {
+                story_generation: 0, // Keep on story step during generation
                 characters: 1,
                 scenes: 1, // Stay on characters step - don't advance until character assets complete
                 character_refs: 1, // Stay on characters step until character assets complete
@@ -490,6 +556,18 @@
 
               // Advance to next step when appropriate - only after generation completes
               const stepMap = {
+                story_generation: () => {}, // Stay on story step until characters start
+                title_generation: () => {
+                  // Display the title immediately when generated
+                  if (
+                    data.message &&
+                    data.message.includes("Title generated:")
+                  ) {
+                    const title = data.message.replace("Title generated: ", "");
+                    comicTitleEl.textContent = title;
+                    comicTitleEl.style.display = "block";
+                  }
+                },
                 characters: () => {}, // Don't advance yet, wait for character_refs
                 scenes: () => {}, // Don't advance yet, wait for scene_refs
                 character_refs: () => setCurrentStep(2), // Now move to scenes after character generation
@@ -554,8 +632,8 @@
       }
 
       startBtn.addEventListener("click", async () => {
-        const story = storyEl.value.trim();
-        if (!story) return;
+        const input = storyEl.value.trim();
+        if (!input) return;
         startBtn.disabled = true;
         startBtn.textContent = "Generating...";
         startBtn.classList.add("generating");
@@ -568,13 +646,18 @@
         sceneSelect.innerHTML = "";
         charView.classList.add("hidden");
         sceneView.classList.add("hidden");
+        comicTitleEl.style.display = "none"; // Hide title when starting new generation
         manifest = null;
         setCurrentStep(0); // Reset to story step
         try {
+          const requestBody = generateMode.checked
+            ? { user_input: input, generate_story: true }
+            : { story: input };
+
           const r = await fetch("/api/start", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ story }),
+            body: JSON.stringify(requestBody),
           });
           const j = await r.json();
           if (j.run) {
@@ -614,6 +697,9 @@
 
       // Initialize step UI on page load
       updateStepUI();
+
+      // Initialize input mode
+      updateInputMode();
     </script>
   </body>
 </html>
