@@ -577,7 +577,7 @@ class GAIC:
     def generate_image_with_nano(self, prompt: str, base_image: Optional[bytes] = None, model: str = NANO_IMAGE_MODEL) -> bytes:
         """
         Generate an image using nano banana flash model.
-        If base_image is provided, edit that image. Otherwise, generate from scratch.
+        If base_image is provided, edit that image. Otherwise, generate from scratch using a white canvas.
         Returns PNG bytes.
         """
         parts: List[Any] = []
@@ -586,15 +586,115 @@ class GAIC:
             # Edit mode: start with base image
             parts.append({"inline_data": {"mime_type": "image/png",
                          "data": base64.b64encode(base_image).decode("utf-8")}})
+        else:
+            # Generate from scratch: create a white canvas as base
+            white_canvas = Image.new("RGB", (PANEL_SIZE, PANEL_SIZE), "white")
+            white_canvas_bytes = pil_to_png_bytes(white_canvas)
+            parts.append({"inline_data": {"mime_type": "image/png",
+                         "data": base64.b64encode(white_canvas_bytes).decode("utf-8")}})
 
         parts.append(prompt)
 
-        resp = self.client.models.generate_content(model=model, contents=parts)
-        for cand in resp.candidates:
-            for part in cand.content.parts:
-                if getattr(part, "inline_data", None) and getattr(part.inline_data, "data", None):
-                    return base64.b64decode(part.inline_data.data)
-        raise RuntimeError("Nano image generation returned no image data.")
+        try:
+            resp = self.client.models.generate_content(
+                model=model, contents=parts)
+        except Exception as e:
+            print(f"[ERROR] API call failed: {e}")
+            raise RuntimeError(f"Nano image generation API call failed: {e}")
+
+        # Debug: print response structure
+        print(f"[DEBUG] Response type: {type(resp)}")
+        print(
+            f"[DEBUG] Response hasattr candidates: {hasattr(resp, 'candidates')}")
+
+        if not hasattr(resp, 'candidates') or not resp.candidates:
+            print(f"[ERROR] No candidates in response: {resp}")
+            raise RuntimeError("Nano image generation returned no candidates.")
+
+        print(f"[DEBUG] Candidates: {len(resp.candidates)}")
+
+        for i, cand in enumerate(resp.candidates):
+            print(f"[DEBUG] Candidate {i}: type={type(cand)}")
+            if not hasattr(cand, 'content'):
+                print(f"[DEBUG] Candidate {i} has no content attribute")
+                continue
+
+            print(f"[DEBUG] Candidate {i} content: type={type(cand.content)}")
+            if not hasattr(cand.content, 'parts') or not cand.content.parts:
+                print(f"[DEBUG] Candidate {i} content has no parts")
+                continue
+
+            print(f"[DEBUG] Candidate {i} has {len(cand.content.parts)} parts")
+            for j, part in enumerate(cand.content.parts):
+                print(f"[DEBUG] Part {j}: type={type(part)}")
+                print(
+                    f"[DEBUG] Part {j} hasattr inline_data: {hasattr(part, 'inline_data')}")
+
+                if hasattr(part, "inline_data") and part.inline_data:
+                    print(
+                        f"[DEBUG] Part {j} inline_data: type={type(part.inline_data)}")
+                    print(
+                        f"[DEBUG] Part {j} inline_data hasattr data: {hasattr(part.inline_data, 'data')}")
+
+                    if hasattr(part.inline_data, "data") and part.inline_data.data:
+                        try:
+                            # Check if data is already bytes or if it's base64 string
+                            if isinstance(part.inline_data.data, bytes):
+                                image_data = part.inline_data.data
+                                print(
+                                    f"[DEBUG] Got raw bytes data length: {len(image_data)} bytes")
+                            else:
+                                image_data = base64.b64decode(
+                                    part.inline_data.data)
+                                print(
+                                    f"[DEBUG] Decoded base64 data length: {len(image_data)} bytes")
+
+                            print(
+                                f"[DEBUG] First 20 bytes as hex: {image_data[:20].hex()}")
+
+                            # Check for common image format headers
+                            if image_data.startswith(b'\x89PNG'):
+                                print(f"[DEBUG] Detected PNG format")
+                            elif image_data.startswith(b'\xff\xd8\xff'):
+                                print(f"[DEBUG] Detected JPEG format")
+                            elif image_data.startswith(b'GIF'):
+                                print(f"[DEBUG] Detected GIF format")
+                            elif image_data.startswith(b'RIFF') and b'WEBP' in image_data[:20]:
+                                print(f"[DEBUG] Detected WebP format")
+                            else:
+                                print(
+                                    f"[DEBUG] Unknown format - first 100 bytes: {image_data[:100]}")
+
+                            # Validate that it's actually image data by trying to open it
+                            try:
+                                test_img = Image.open(io.BytesIO(image_data))
+                                print(
+                                    f"[DEBUG] Successfully validated image: {test_img.size}, {test_img.mode}")
+                                return image_data
+                            except Exception as img_error:
+                                print(
+                                    f"[ERROR] Invalid image data: {img_error}")
+                                print(
+                                    f"[DEBUG] Data length: {len(image_data)} bytes")
+                                continue
+
+                        except Exception as decode_error:
+                            print(
+                                f"[ERROR] Failed to process data: {decode_error}")
+                            print(
+                                f"[DEBUG] Raw data type: {type(part.inline_data.data)}")
+                            print(
+                                f"[DEBUG] Raw data length: {len(part.inline_data.data) if hasattr(part.inline_data.data, '__len__') else 'no length'}")
+                            continue
+                else:
+                    print(
+                        f"[DEBUG] Part {j} has no inline_data or inline_data is None")
+                    if hasattr(part, 'text'):
+                        print(
+                            f"[DEBUG] Part {j} text content: {part.text[:200]}...")
+
+        raise RuntimeError(
+            "Nano image generation returned no valid image data.")
 
     def edit_image_with_nano(self, base_image: bytes, instruction: str, ref_images: Optional[List[bytes]] = None,
                              model: str = NANO_EDIT_MODEL) -> bytes:
@@ -606,12 +706,39 @@ class GAIC:
                 parts.append({"inline_data": {"mime_type": "image/png",
                              "data": base64.b64encode(b).decode("utf-8")}})
         parts.append(instruction)
-        resp = self.client.models.generate_content(model=model, contents=parts)
+
+        try:
+            resp = self.client.models.generate_content(
+                model=model, contents=parts)
+        except Exception as e:
+            print(f"[ERROR] Nano edit API call failed: {e}")
+            raise RuntimeError(f"Nano edit API call failed: {e}")
+
+        if not hasattr(resp, 'candidates') or not resp.candidates:
+            raise RuntimeError("Nano edit returned no candidates.")
+
         for cand in resp.candidates:
+            if not hasattr(cand, 'content') or not cand.content.parts:
+                continue
+
             for part in cand.content.parts:
-                if getattr(part, "inline_data", None) and getattr(part.inline_data, "data", None):
-                    return part.inline_data.data
-        raise RuntimeError("Nano edit returned no image data.")
+                if hasattr(part, "inline_data") and part.inline_data and hasattr(part.inline_data, "data") and part.inline_data.data:
+                    try:
+                        # Handle both bytes and base64 string data
+                        if isinstance(part.inline_data.data, bytes):
+                            image_data = part.inline_data.data
+                        else:
+                            image_data = base64.b64decode(
+                                part.inline_data.data)
+                        # Validate image data
+                        test_img = Image.open(io.BytesIO(image_data))
+                        return image_data
+                    except Exception as e:
+                        print(
+                            f"[ERROR] Invalid image data in edit response: {e}")
+                        continue
+
+        raise RuntimeError("Nano edit returned no valid image data.")
 
 
 def generate_comic_title(g: GAIC, story: str) -> str:
@@ -890,7 +1017,7 @@ def run_pipeline(story_text: str, out_root: Path):
         name_to_ref_bytes[c.name.lower()] = png
         print(f"   ✓ {c.name} -> {fname}")
 
-    # Scene refs via Nano bananaFlash
+    # Scene refs via Nano banana Flash
     print(">> Generating scene references (Nano bananaFlash)...")
     scene_to_ref_bytes: Dict[str, bytes] = {}
     for s in scenes:
