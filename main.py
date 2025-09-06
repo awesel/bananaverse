@@ -95,6 +95,13 @@ class SpeechLine(BaseModel):
     whisper: bool = False
 
 
+class CharacterPosition(BaseModel):
+    name: str
+    x: float  # 0.0 to 1.0, left to right
+    y: float  # 0.0 to 1.0, top to bottom
+    prominence: str  # "foreground", "background", "off_screen"
+
+
 class Panel(BaseModel):
     index: int
     prompt: str
@@ -102,6 +109,8 @@ class Panel(BaseModel):
     # Narration text for caption boxes
     narration: Optional[str] = None
     characterNames: List[str] = Field(default_factory=list)
+    # Character positioning information for text placement
+    characterPositions: List[CharacterPosition] = Field(default_factory=list)
     sceneName: str = ""
     perspective: str = ""
     sfx: List[str] = Field(default_factory=list)
@@ -203,10 +212,113 @@ def wrap_text(text: str, font, max_width: int, draw) -> List[str]:
     return lines
 
 
+def find_best_text_position_from_panel_data(speaker: str, panel: Panel,
+                                            used_areas: List[tuple], rect_width: int, rect_height: int,
+                                            img_width: int, img_height: int) -> tuple:
+    """
+    Find the best position for a text box based on the speaker's position from panel data.
+    """
+    # Find the speaker's position in the panel data
+    speaker_position = None
+    for char_pos in panel.characterPositions:
+        if char_pos.name == speaker:
+            speaker_position = char_pos
+            break
+
+    if not speaker_position or speaker_position.prominence == "off_screen":
+        # Fallback to default positions if character position unknown or off-screen
+        default_positions = [
+            (img_width * 0.1, img_height * 0.1),
+            (img_width * 0.6, img_height * 0.1),
+            (img_width * 0.1, img_height * 0.4),
+            (img_width * 0.6, img_height * 0.4),
+            (img_width * 0.1, img_height * 0.7),
+            (img_width * 0.6, img_height * 0.7),
+        ]
+        return default_positions[0]
+
+    char_pixel_x = speaker_position.x * img_width
+    char_pixel_y = speaker_position.y * img_height
+
+    # Adjust positioning based on prominence
+    if speaker_position.prominence == "background":
+        # For background characters, place text more conservatively
+        offset_distance = 30
+    else:
+        # For foreground characters, can place text closer
+        offset_distance = 50
+
+    # Try positions around the character, preferring above and to sides
+    candidate_positions = [
+        # Above character
+        (char_pixel_x - rect_width/2, char_pixel_y - rect_height - offset_distance),
+        # Above and to the left
+        (char_pixel_x - rect_width - 20, char_pixel_y -
+         rect_height - offset_distance + 20),
+        # Above and to the right
+        (char_pixel_x + 20, char_pixel_y - rect_height - offset_distance + 20),
+        # To the side (left)
+        (char_pixel_x - rect_width - 40, char_pixel_y - rect_height/2),
+        # To the side (right)
+        (char_pixel_x + 40, char_pixel_y - rect_height/2),
+        # Below (as last resort)
+        (char_pixel_x - rect_width/2, char_pixel_y + offset_distance),
+    ]
+
+    # Find the first position that doesn't overlap significantly with used areas
+    for pos_x, pos_y in candidate_positions:
+        # Clamp to image bounds
+        pos_x = max(10, min(pos_x, img_width - rect_width - 10))
+        pos_y = max(10, min(pos_y, img_height - rect_height - 10))
+
+        # Check for overlap with used areas
+        new_rect = (pos_x, pos_y, pos_x + rect_width, pos_y + rect_height)
+
+        has_significant_overlap = False
+        for used_rect in used_areas:
+            if rectangles_overlap_significantly(new_rect, used_rect):
+                has_significant_overlap = True
+                break
+
+        if not has_significant_overlap:
+            return (pos_x, pos_y)
+
+    # If all positions overlap, use the first one anyway (better than random placement)
+    pos_x, pos_y = candidate_positions[0]
+    pos_x = max(10, min(pos_x, img_width - rect_width - 10))
+    pos_y = max(10, min(pos_y, img_height - rect_height - 10))
+    return (pos_x, pos_y)
+
+
+def rectangles_overlap_significantly(rect1: tuple, rect2: tuple, threshold: float = 0.3) -> bool:
+    """
+    Check if two rectangles overlap by more than the threshold (as fraction of smaller area).
+    """
+    x1, y1, x2, y2 = rect1
+    x3, y3, x4, y4 = rect2
+
+    # Calculate intersection
+    left = max(x1, x3)
+    top = max(y1, y3)
+    right = min(x2, x4)
+    bottom = min(y2, y4)
+
+    if left >= right or top >= bottom:
+        return False  # No overlap
+
+    overlap_area = (right - left) * (bottom - top)
+    area1 = (x2 - x1) * (y2 - y1)
+    area2 = (x4 - x3) * (y4 - y3)
+    smaller_area = min(area1, area2)
+
+    return (overlap_area / smaller_area) > threshold
+
+
 def add_text_rectangles_to_panel(panel_img: Image.Image, panel: Panel) -> Image.Image:
     """
     Mechanically add text to a panel using PIL with simple rectangles.
     This creates clean, readable text that Nano can later convert to speech bubbles.
+    Uses character position data from the panel for intelligent text placement.
     """
     if not panel.dialogue and not panel.narration:
         return panel_img
@@ -269,25 +381,11 @@ def add_text_rectangles_to_panel(panel_img: Image.Image, panel: Panel) -> Image.
         rect_width = max_line_width + 2 * padding
         rect_height = total_text_height + 2 * padding
 
-        # Position rectangles - try different locations to avoid overlap
-        positions_to_try = [
-            # Top areas
-            (width * 0.1, height * 0.1),
-            (width * 0.6, height * 0.1),
-            # Middle areas
-            (width * 0.1, height * 0.4),
-            (width * 0.6, height * 0.4),
-            # Bottom areas
-            (width * 0.1, height * 0.7),
-            (width * 0.6, height * 0.7),
-        ]
-
-        # Find a position that doesn't overlap with used areas
-        rect_x, rect_y = positions_to_try[i % len(positions_to_try)]
-
-        # Ensure rectangle fits within image bounds
-        rect_x = max(0, min(rect_x, width - rect_width))
-        rect_y = max(0, min(rect_y, height - rect_height))
+        # Find best position based on speaker's position from panel data
+        rect_x, rect_y = find_best_text_position_from_panel_data(
+            dialogue_line.speaker, panel, used_areas,
+            rect_width, rect_height, width, height
+        )
 
         # Draw white rectangle with black border
         draw.rectangle([rect_x, rect_y, rect_x + rect_width, rect_y + rect_height],
@@ -849,12 +947,39 @@ def build_nano_edit_instruction(p: Panel) -> str:
     """
     Build instruction for Nano to convert PIL text rectangles into proper speech bubbles.
     This assumes the image already has mechanically-placed text in rectangles.
+    Includes character positioning context for better bubble tail placement.
     """
     parts = []
     if p.dialogue:
         speaker_list = ", ".join([d.speaker for d in p.dialogue])
         parts.append(
             f"Convert the white text rectangles into proper comic speech bubbles. The speakers are: {speaker_list}")
+
+        # Add character positioning context
+        if p.characterPositions:
+            position_info = []
+            for char_pos in p.characterPositions:
+                if char_pos.prominence != "off_screen":
+                    # Convert positions to descriptive terms
+                    x_desc = "center"
+                    if char_pos.x < 0.33:
+                        x_desc = "left side"
+                    elif char_pos.x > 0.67:
+                        x_desc = "right side"
+
+                    y_desc = "middle"
+                    if char_pos.y < 0.33:
+                        y_desc = "upper area"
+                    elif char_pos.y > 0.67:
+                        y_desc = "lower area"
+
+                    position_info.append(
+                        f"{char_pos.name} is positioned in the {x_desc}, {y_desc} of the frame")
+
+            if position_info:
+                parts.append(
+                    "Character positions for bubble tail reference: " + "; ".join(position_info))
+
         parts.append(
             "Add bubble tails pointing toward the appropriate characters when possible")
         parts.append(
@@ -879,8 +1004,9 @@ def build_nano_edit_instruction(p: Panel) -> str:
         instruction += "\n- Keep ALL existing text in exactly the same position and formatting"
         instruction += "\n- Do NOT move, resize, or reformat any text"
         instruction += "\n- Only change the rectangular containers into bubble/caption shapes"
-        instruction += "\n- Add bubble tails/pointers where appropriate"
+        instruction += "\n- Add bubble tails/pointers pointing toward the correct speaker based on their position"
         instruction += "\n- Preserve all line breaks and text wrapping exactly as shown"
+        instruction += "\n- Ensure bubble tails don't obscure important visual elements"
         return instruction
     else:
         return "Make minor composition adjustments; do not add text."

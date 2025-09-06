@@ -15,6 +15,14 @@ Return ONLY valid JSON with this exact schema:
       ],
       "narration": string,        // optional narration text for caption boxes (null if none)
       "characterNames": string[], // characters that appear in this panel
+      "characterPositions": [     // positioning info for speech bubble placement
+        {
+          "name": string,         // character name
+          "x": number,            // 0.0 to 1.0, left to right position
+          "y": number,            // 0.0 to 1.0, top to bottom position
+          "prominence": string    // "foreground", "background", or "off_screen"
+        }
+      ],
       "sceneName": string,        // which scene this panel takes place in
       "perspective": string,      // camera perspective
       "sfx": string[],           // sound effects like ["WHOOSH", "CLACK"]
@@ -27,8 +35,9 @@ Available scenes:
 {scenes}
 
 Guidelines:
-- For each panel, include: characterNames, sfx, visualCues.
+- For each panel, include: characterNames, characterPositions, sfx, visualCues.
 - characterNames must include the speaker(s) in dialogue.
+- characterPositions must include positioning for ALL characters in characterNames.
 - If text mentions an entity (e.g., "courier"), map to the character name via aliases.
 - Prefer a new panel for each beat or exchange; aim for 6–18 total.
 - "prompt" must be purely visual (characters, pose, setting, action), not meta.
@@ -49,6 +58,19 @@ Guidelines:
   * "action_shot" - dynamic angle for movement or action
   * "establishing_shot" - wide view to establish location
   * "reaction_shot" - close-up showing character's emotional response
+
+CHARACTER POSITIONING GUIDELINES:
+- For characterPositions, specify where each character appears in the frame:
+  * x: 0.0 = far left, 0.5 = center, 1.0 = far right
+  * y: 0.0 = top of frame, 0.5 = middle, 1.0 = bottom of frame
+  * prominence: "foreground" (main focus), "background" (visible but secondary), "off_screen" (present but not visible)
+- Consider the perspective when positioning:
+  * "close_up": single character at (0.5, 0.4), others off_screen
+  * "medium_shot": 1-2 characters, spread horizontally (0.3, 0.4) and (0.7, 0.4)
+  * "wide_shot": multiple characters spread across frame
+  * "character_focus": focused character at (0.5, 0.4), others in background positions
+- Speech bubbles will be placed near the speaker's position, so ensure speakers are visible (not off_screen)
+- For dialogue scenes, position speakers where they can face each other naturally
 
 STORY:
 ---
