@@ -6,16 +6,49 @@ Return ONLY valid JSON with this exact schema:
     {
       "index": number,            // starting at 1, contiguous
       "prompt": string,           // 1–2 sentences describing the visual scene
-      "dialogue": string[],       // lines like "Name: text"
-      "characterNames": string[]  // names that appear in this panel
+      "dialogue": [               // structured dialogue objects
+        {
+          "speaker": string,      // character name
+          "text": string,         // what they say
+          "whisper": boolean      // optional, defaults to false
+        }
+      ],
+      "narration": string,        // optional narration text for caption boxes (null if none)
+      "characterNames": string[], // characters that appear in this panel
+      "sceneName": string,        // which scene this panel takes place in
+      "perspective": string,      // camera perspective
+      "sfx": string[],           // sound effects like ["WHOOSH", "CLACK"]
+      "visualCues": string[]     // visual elements like ["papers_fly", "shadow_overhead"]
     }
   ]
 }
 
+Available scenes:
+{scenes}
+
 Guidelines:
+- For each panel, include: characterNames, sfx, visualCues.
+- characterNames must include the speaker(s) in dialogue.
+- If text mentions an entity (e.g., "courier"), map to the character name via aliases.
 - Prefer a new panel for each beat or exchange; aim for 6–18 total.
 - "prompt" must be purely visual (characters, pose, setting, action), not meta.
-- Keep dialogue lines short; merge or trim if overly long.
+- "dialogue" uses structured objects with speaker/text/whisper fields.
+- Keep dialogue text short; merge or trim if overly long.
+- "narration" should contain any narrative text that describes what's happening (like "(Narration) A faint glow pulses from the distant tower."). Set to null if there's no narration for the panel.
+- "sceneName" should match one of the scene names from the list above.
+- IMPORTANT: Maintain character continuity - if characters are present in a scene, include them in "characterNames" even for silent panels unless they explicitly leave or are not visible. Err on the side of including characters for better visual continuity.
+- When in doubt about character presence, include them rather than exclude them to maintain story flow and character presence.
+- "sfx" should include onomatopoeia for sounds mentioned in the story (wind, mechanical sounds, etc.)
+- "visualCues" should include specific visual elements that enhance the scene (flying papers, shadows, blinking lights, etc.)
+- "perspective" should be one of:
+  * "full_scene" - shows the entire scene with all characters visible
+  * "close_up" - tight shot on a character's face or specific detail
+  * "medium_shot" - shows character from waist up
+  * "wide_shot" - shows characters in context of larger environment
+  * "character_focus" - emphasizes one character while others are background
+  * "action_shot" - dynamic angle for movement or action
+  * "establishing_shot" - wide view to establish location
+  * "reaction_shot" - close-up showing character's emotional response
 
 STORY:
 ---

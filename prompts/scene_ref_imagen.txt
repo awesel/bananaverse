@@ -1,0 +1,7 @@
+Create a square reference image of this scene/location without any characters.
+Art direction: {STYLE_PRESET}.
+Scene setting: {setting}.
+Scene description: {description}.
+Show the environment, lighting, and atmosphere. No people, just the location itself.
+High detail, consistent visual reference for later panels.
+(No text in the image.)

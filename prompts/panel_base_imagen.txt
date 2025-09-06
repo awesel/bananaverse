@@ -1,0 +1,4 @@
+Square comic panel. Visual scene: {panel_visual}.
+Art direction: {STYLE_PRESET}.
+Include these characters in the scene: {character_names}.
+Do not render any text, captions, or speech bubbles. Leave visual space for bubbles.

@@ -1,0 +1,10 @@
+Create a character reference sheet for a comic book.
+Show the character in three poses: a neutral front view, a side view, and an action pose.
+The background should be plain white.
+Style: {STYLE_PRESET}
+
+Character Appearance: {appearance}
+
+High detail, consistent identity for later panels.
+Arrange the three poses in a clear, organized layout on the square canvas.
+(No text in the image.)

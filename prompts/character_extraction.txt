@@ -1,16 +1,38 @@
-You are a comic pre-production tool. Extract all unique characters from the story.
+You are a comic pre-production tool. Extract all unique characters from the story and analyze their presence in each scene.
+
+CRITICAL: List all entities (human or not) that act, speak, move, or cause state changes (e.g., animals, robots, vehicles, supernatural beings).
+
 Return ONLY valid JSON with this exact schema:
 
 {
   "characters": [
-    { "name": string, "appearance": string, "summary": string }
+    {
+      "name": string,
+      "kind": string,  // "human", "creature", "robotic_creature", "vehicle", or "prop"
+      "aliases": [string],  // any synonyms/alternate names used in story
+      "appearance": string,
+      "summary": string,
+      "scenePresence": [
+        {
+          "sceneName": string,
+          "isPresent": boolean,
+          "action": string  // what they're doing in this scene, or "not present" if isPresent is false
+        }
+      ]
+    }
   ]
 }
 
 Guidelines:
+- Include kind ∈ {"human", "creature", "robotic_creature", "vehicle", "prop"} and any aliases/synonyms used in the story.
+- If an entity carries messages or is named indirectly (e.g., "our courier"), treat it as a character.
 - "appearance" must be visually descriptive (~1–2 sentences): age vibe, build, hair, clothing, signature items/colors.
+- For non-human entities, describe materials, mechanisms, distinctive features, colors, size relative to humans.
 - Synthesize details if missing to ensure a distinct visual.
 - Keep names short (2 words max) if the text lacks explicit names.
+- For each character, analyze their presence in each scene mentioned in the story.
+- "action" should describe what the character is doing in that specific scene (e.g., "standing guard", "examining the signal", "reacting to the noise").
+- If a character is not present in a scene, set "isPresent" to false and "action" to "not present".
 
 STORY:
 ---

@@ -1,0 +1,19 @@
+You are a comic pre-production tool. Extract all unique scenes/locations from the story.
+Return ONLY valid JSON with this exact schema:
+
+{
+  "scenes": [
+    { "name": string, "description": string, "setting": string }
+  ]
+}
+
+Guidelines:
+- "name" should be a short, descriptive name (2-4 words max).
+- "description" must be visually descriptive (~1–2 sentences): lighting, atmosphere, key visual elements.
+- "setting" should describe the physical location and environment details.
+- Create distinct scenes for different locations or significant changes in setting/time.
+
+STORY:
+---
+{story}
+---

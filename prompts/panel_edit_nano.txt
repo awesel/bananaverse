@@ -1,0 +1,8 @@
+Edit the provided base panel image.
+Ensure each depicted character's look matches the provided reference images (identity consistency).
+{bubble_text_lines}
+Guidelines:
+- Place bubbles near the likely speaker; avoid covering faces.
+- Keep typography clear and high-contrast.
+- If there are multiple lines, use multiple bubbles or a stacked bubble.
+Only add bubbles and minor composition tweaks needed for readability.

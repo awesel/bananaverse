@@ -1,0 +1,15 @@
+Edit the provided scene reference image to place the characters in the scene.
+Visual scene action: {panel_visual}.
+Characters to include: {character_names}.
+Ensure each character matches the provided reference images (identity consistency).
+Place characters in the scene such that they are doing the specified actions without any speech bubbles.
+Art direction: {STYLE_PRESET}.
+Leave visual space for speech bubbles to be added later.
+Do not render any text, captions, or speech bubbles.
+
+IMPORTANT CONTINUITY REQUIREMENTS:
+- If a previous panel image is provided, maintain visual continuity from that panel
+- Preserve logical character positioning and scene progression
+- Ensure everything makes physical sense in relation to the previous panel
+- Characters are allowed to be in different positions than the reference images to maintain story flow
+- Make sure lighting, perspective, and environmental details are consistent with the story progression
