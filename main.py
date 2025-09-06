@@ -547,57 +547,90 @@ def build_character_descriptors(p: Panel, all_chars: List[Character]) -> str:
     return " | ".join(descs) if descs else "As applicable."
 
 
-def create_title_panel(title: str, panel_size: int = PANEL_SIZE) -> bytes:
-    """Create a title panel with the comic title."""
-    # Create a canvas for the title panel
-    canvas = Image.new("RGB", (panel_size, panel_size), "white")
-    draw = ImageDraw.Draw(canvas)
+def create_title_panel(g: "GAIC", title: str, logger: "PromptLogger", panel_size: int = PANEL_SIZE) -> bytes:
+    """Create a title panel with the comic title using Nano Banana image generation."""
+    # Build the title generation prompt
+    title_prompt = f"""Please generate a comic book title image with the text "{title}". 
+    
+Style requirements:
+- {STYLE_PRESET}
+- Bold, dramatic comic book title design
+- Eye-catching typography that fits the comic theme
+- Professional comic book cover style
+- The title text should be prominent and clearly readable
+- Use dynamic composition and striking visual design
+- Make it look like a proper comic book title panel
 
-    # Try to load a font, fallback to default
+The title text is: "{title}"
+
+Create a visually striking title image that would work as the opening panel of a comic book."""
+
+    logger.log("TITLE_PANEL_NANO_PROMPT", title_prompt)
+
     try:
-        # Try to find a bold font
-        font_paths = [
-            "/System/Library/Fonts/Helvetica.ttc",  # macOS
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",  # Linux
-            "arial.ttf"  # Windows
-        ]
-        font = None
-        for font_path in font_paths:
-            try:
-                # Larger font for title panel
-                font = ImageFont.truetype(font_path, 72)
-                break
-            except:
-                continue
-        if font is None:
+        # Generate title panel using Nano Banana
+        title_image_bytes = g.generate_image_with_nano(title_prompt)
+
+        # Resize to proper panel size
+        title_img = resize_to_fill(
+            image_bytes_to_pil(title_image_bytes), panel_size)
+        title_png = pil_to_png_bytes(title_img)
+
+        return title_png
+
+    except Exception as e:
+        print(
+            f"   ! Nano title generation failed: {e}. Using fallback plain text title.")
+        logger.log("TITLE_PANEL_FALLBACK",
+                   f"Nano generation failed: {e}, using fallback")
+
+        # Fallback to original plain text implementation
+        canvas = Image.new("RGB", (panel_size, panel_size), "white")
+        draw = ImageDraw.Draw(canvas)
+
+        # Try to load a font, fallback to default
+        try:
+            font_paths = [
+                "/System/Library/Fonts/Helvetica.ttc",  # macOS
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",  # Linux
+                "arial.ttf"  # Windows
+            ]
+            font = None
+            for font_path in font_paths:
+                try:
+                    font = ImageFont.truetype(font_path, 72)
+                    break
+                except:
+                    continue
+            if font is None:
+                font = ImageFont.load_default()
+        except:
             font = ImageFont.load_default()
-    except:
-        font = ImageFont.load_default()
 
-    # Calculate title position (centered)
-    title_bbox = draw.textbbox((0, 0), title, font=font)
-    title_width = title_bbox[2] - title_bbox[0]
-    title_height = title_bbox[3] - title_bbox[1]
-    title_x = (panel_size - title_width) // 2
-    title_y = (panel_size - title_height) // 2
+        # Calculate title position (centered)
+        title_bbox = draw.textbbox((0, 0), title, font=font)
+        title_width = title_bbox[2] - title_bbox[0]
+        title_height = title_bbox[3] - title_bbox[1]
+        title_x = (panel_size - title_width) // 2
+        title_y = (panel_size - title_height) // 2
 
-    # Draw title background
-    padding = 20
-    draw.rectangle([title_x - padding, title_y - padding,
-                   title_x + title_width + padding, title_y + title_height + padding],
-                   fill="black")
-    draw.text((title_x, title_y), title, fill="white", font=font)
+        # Draw title background
+        padding = 20
+        draw.rectangle([title_x - padding, title_y - padding,
+                       title_x + title_width + padding, title_y + title_height + padding],
+                       fill="black")
+        draw.text((title_x, title_y), title, fill="white", font=font)
 
-    return pil_to_png_bytes(canvas)
+        return pil_to_png_bytes(canvas)
 
 
-def create_comic_layout(panels: List[bytes], title: str, panel_size: int = PANEL_SIZE) -> Image.Image:
+def create_comic_layout(panels: List[bytes], title: str, g: "GAIC", logger: "PromptLogger", panel_size: int = PANEL_SIZE) -> Image.Image:
     """Stitch panels together into a comic book layout with title panel as first panel."""
     if not panels:
         raise ValueError("No panels to stitch together")
 
     # Create title panel and add it as the first panel
-    title_panel_bytes = create_title_panel(title, panel_size)
+    title_panel_bytes = create_title_panel(g, title, logger, panel_size)
     all_panels = [title_panel_bytes] + panels
 
     # Calculate layout - 2 columns max
@@ -1289,7 +1322,7 @@ def run_pipeline(story_text: str, out_root: Path):
 
     if final_panel_bytes:
         comic_layout = create_comic_layout(
-            final_panel_bytes, comic_title, PANEL_SIZE)
+            final_panel_bytes, comic_title, g, logger, PANEL_SIZE)
         comic_path = out_root / "comic_final.png"
         comic_layout.save(comic_path, "PNG")
         print(f"   ✓ Final comic saved: {comic_path}")

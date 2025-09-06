@@ -160,7 +160,85 @@
       .code {
         font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
           monospace;
-        font-size: 12px;
+        font-size: 11px;
+        max-height: 120px;
+        overflow-y: auto;
+        background: #0b0c10;
+        border: 1px solid #3a4750;
+        border-radius: 6px;
+        padding: 8px;
+        margin-top: 8px;
+        white-space: pre-wrap;
+        line-height: 1.5;
+        color: #c9d1d9;
+        scroll-behavior: smooth;
+      }
+      .code::-webkit-scrollbar {
+        width: 6px;
+      }
+      .code::-webkit-scrollbar-track {
+        background: #1f2833;
+        border-radius: 3px;
+      }
+      .code::-webkit-scrollbar-thumb {
+        background: #3a4750;
+        border-radius: 3px;
+      }
+      .code::-webkit-scrollbar-thumb:hover {
+        background: #66fcf1;
+      }
+      .flowchart {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 12px;
+        padding: 20px 24px;
+        background: #1a1d23;
+        border-bottom: 1px solid #3a4750;
+      }
+      .step {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 16px;
+        border-radius: 20px;
+        background: #0f1115;
+        border: 2px solid #3a4750;
+        color: #9aa5b1;
+        font-size: 13px;
+        font-weight: 600;
+        transition: all 0.3s ease;
+        min-width: 140px;
+        justify-content: center;
+      }
+      .step.active {
+        background: #66fcf1;
+        border-color: #66fcf1;
+        color: #0b0c10;
+        transform: scale(1.05);
+        box-shadow: 0 4px 12px rgba(102, 252, 241, 0.3);
+      }
+      .step.completed {
+        background: #45b7b8;
+        border-color: #45b7b8;
+        color: #ffffff;
+      }
+      .step-icon {
+        width: 16px;
+        height: 16px;
+        border-radius: 50%;
+        background: currentColor;
+        opacity: 0.7;
+        transition: all 0.3s ease;
+      }
+      .step.active .step-icon,
+      .step.completed .step-icon {
+        opacity: 1;
+      }
+      .step-arrow {
+        color: #3a4750;
+        font-size: 16px;
+        font-weight: bold;
       }
     </style>
   </head>
@@ -169,6 +247,27 @@
       <h1>BananaVerse</h1>
       <div class="status" id="status">Idle</div>
     </header>
+    <div class="flowchart">
+      <div class="step" id="step-story">
+        <div class="step-icon"></div>
+        <span>Enter Story</span>
+      </div>
+      <div class="step-arrow">→</div>
+      <div class="step" id="step-characters">
+        <div class="step-icon"></div>
+        <span>Generate Characters</span>
+      </div>
+      <div class="step-arrow">→</div>
+      <div class="step" id="step-scenes">
+        <div class="step-icon"></div>
+        <span>Generate Scenes</span>
+      </div>
+      <div class="step-arrow">→</div>
+      <div class="step" id="step-panels">
+        <div class="step-icon"></div>
+        <span>Generate Panels</span>
+      </div>
+    </div>
     <div class="container">
       <div class="panel">
         <h3>Enter Story</h3>
@@ -217,10 +316,61 @@
 
       let currentRun = null;
       let manifest = null;
+      let currentStep = 0; // 0: story, 1: characters, 2: scenes, 3: panels
 
-      function log(line) {
-        logEl.textContent += `\n${line}`;
-        logEl.scrollTop = logEl.scrollHeight;
+      const steps = [
+        { id: "step-story", name: "story" },
+        { id: "step-characters", name: "characters" },
+        { id: "step-scenes", name: "scenes" },
+        { id: "step-panels", name: "panels" },
+      ];
+
+      let logLines = [];
+      const MAX_LOG_LINES = 15; // Keep only the most recent 15 lines
+
+      function log(line, type = "info") {
+        const timestamp = new Date().toLocaleTimeString();
+        const formattedLine = `[${timestamp}] ${line}`;
+
+        logLines.push(formattedLine);
+
+        // Keep only the most recent lines
+        if (logLines.length > MAX_LOG_LINES) {
+          logLines = logLines.slice(-MAX_LOG_LINES);
+        }
+
+        // Update the display
+        logEl.textContent = logLines.join("\n");
+
+        // Auto-scroll to bottom with a small delay to ensure content is rendered
+        setTimeout(() => {
+          logEl.scrollTop = logEl.scrollHeight;
+        }, 10);
+      }
+
+      function updateStepUI() {
+        steps.forEach((step, index) => {
+          const element = document.getElementById(step.id);
+          element.classList.remove("active", "completed");
+
+          if (index < currentStep) {
+            element.classList.add("completed");
+          } else if (index === currentStep) {
+            element.classList.add("active");
+          }
+        });
+      }
+
+      function setCurrentStep(stepIndex) {
+        currentStep = stepIndex;
+        updateStepUI();
+      }
+
+      function advanceToNextStep() {
+        if (currentStep < steps.length - 1) {
+          currentStep++;
+          updateStepUI();
+        }
       }
 
       function toURL(path) {
@@ -307,6 +457,49 @@
             if (data.type === "start") {
               statusEl.textContent = "...";
               log("Run started");
+              setCurrentStep(1); // Move to characters step
+            } else if (data.type === "step") {
+              // Handle step start events
+              statusEl.textContent = data.message || "Processing...";
+              log(data.message || `Starting step: ${data.step}`);
+
+              // Map step names to our UI steps
+              const stepMap = {
+                characters: 1,
+                scenes: 2,
+                character_refs: 1, // Still part of characters
+                scene_refs: 2, // Still part of scenes
+                panels: 3,
+                final: 3, // Final is part of panels
+              };
+
+              if (stepMap[data.step] !== undefined) {
+                setCurrentStep(stepMap[data.step]);
+              }
+            } else if (data.type === "step_progress") {
+              // Handle step progress events
+              statusEl.textContent = `${data.item || "Processing"} (${
+                data.current
+              }/${data.total})`;
+              log(
+                `${data.item || "Processing"} (${data.current}/${data.total})`
+              );
+            } else if (data.type === "step_complete") {
+              // Handle step completion events
+              log(`Completed: ${data.message || data.step}`);
+
+              // Advance to next step when appropriate - only after generation completes
+              const stepMap = {
+                characters: () => {}, // Don't advance yet, wait for character_refs
+                scenes: () => {}, // Don't advance yet, wait for scene_refs
+                character_refs: () => setCurrentStep(2), // Now move to scenes after character generation
+                scene_refs: () => setCurrentStep(3), // Now move to panels after scene generation
+                final: () => {}, // Stay on panels (will be completed in done event)
+              };
+
+              if (stepMap[data.step]) {
+                stepMap[data.step]();
+              }
             } else if (data.type === "progress") {
               if (data.files && data.files.length) {
                 log("Files: " + data.files.join(", "));
@@ -363,6 +556,7 @@
         startBtn.textContent = "Generating...";
         startBtn.classList.add("generating");
         statusEl.textContent = "...";
+        logLines = []; // Clear log lines array
         logEl.textContent = "";
         finalImg.removeAttribute("src");
         panelsGrid.innerHTML = "";
@@ -371,6 +565,7 @@
         charView.classList.add("hidden");
         sceneView.classList.add("hidden");
         manifest = null;
+        setCurrentStep(0); // Reset to story step
         try {
           const r = await fetch("/api/start", {
             method: "POST",
@@ -412,6 +607,9 @@
         sceneView.innerHTML = `<img src="${toURL(path)}&_ts=${Date.now()}" />`;
         sceneView.classList.remove("hidden");
       });
+
+      // Initialize step UI on page load
+      updateStepUI();
     </script>
   </body>
 </html>
