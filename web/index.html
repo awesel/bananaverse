@@ -463,12 +463,12 @@
               statusEl.textContent = data.message || "Processing...";
               log(data.message || `Starting step: ${data.step}`);
 
-              // Map step names to our UI steps
+              // Map step names to our UI steps - only advance when asset generation starts
               const stepMap = {
                 characters: 1,
-                scenes: 2,
-                character_refs: 1, // Still part of characters
-                scene_refs: 2, // Still part of scenes
+                scenes: 1, // Stay on characters step - don't advance until character assets complete
+                character_refs: 1, // Stay on characters step until character assets complete
+                scene_refs: 2, // Stay on scenes step until scene assets complete
                 panels: 3,
                 final: 3, // Final is part of panels
               };
@@ -521,6 +521,10 @@
                 manifest.scenes = data.scenes;
               }
               renderAssets();
+            } else if (data.type === "comic_rebuilt") {
+              // Refresh the combined output when comic is rebuilt
+              refreshFinal();
+              log("Comic rebuilt with latest content");
             } else if (data.type === "manifest") {
               manifest = data.manifest;
               renderAssets();

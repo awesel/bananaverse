@@ -290,6 +290,36 @@ def find_best_text_position_from_panel_data(speaker: str, panel: Panel,
     return (pos_x, pos_y)
 
 
+def find_bottom_right_position(dialog_index: int, used_areas: List[tuple],
+                               rect_width: int, rect_height: int,
+                               img_width: int, img_height: int) -> tuple:
+    """
+    Find position for dialog at bottom right, stacking multiple dialogs vertically.
+    """
+    # Base position: bottom right with some margin
+    margin = 10
+    base_x = img_width - rect_width - margin
+    base_y = img_height - rect_height - margin
+
+    # For multiple dialogs, stack them vertically upward
+    vertical_spacing = 5  # Small gap between dialog boxes
+
+    # Calculate vertical offset based on dialog index
+    # Each subsequent dialog goes higher up
+    vertical_offset = dialog_index * (rect_height + vertical_spacing)
+
+    pos_x = base_x
+    pos_y = base_y - vertical_offset
+
+    # Ensure the dialog doesn't go off the top of the panel
+    pos_y = max(margin, pos_y)
+
+    # Ensure it doesn't go off the left side either
+    pos_x = max(margin, min(pos_x, img_width - rect_width - margin))
+
+    return (pos_x, pos_y)
+
+
 def rectangles_overlap_significantly(rect1: tuple, rect2: tuple, threshold: float = 0.3) -> bool:
     """
     Check if two rectangles overlap by more than the threshold (as fraction of smaller area).
@@ -381,10 +411,9 @@ def add_text_rectangles_to_panel(panel_img: Image.Image, panel: Panel) -> Image.
         rect_width = max_line_width + 2 * padding
         rect_height = total_text_height + 2 * padding
 
-        # Find best position based on speaker's position from panel data
-        rect_x, rect_y = find_best_text_position_from_panel_data(
-            dialogue_line.speaker, panel, used_areas,
-            rect_width, rect_height, width, height
+        # Position dialog at bottom right (diagonal from narrator text at top left)
+        rect_x, rect_y = find_bottom_right_position(
+            i, used_areas, rect_width, rect_height, width, height
         )
 
         # Draw white rectangle with rounded appearance using black border
@@ -1280,6 +1309,7 @@ def run_pipeline(story_text: str, out_root: Path):
         panel_manifest.append({"index": p.index, "file": f"panels/{fname}",
                               "base_file": f"panels/{base_fname}",
                                "text_file": text_file,  # New field for PIL text version
+                               "prompt": p.prompt,  # Add the visual description prompt
                                "dialogue": dialogue_strings, "narration": p.narration,
                                "characters": p.characterNames, "scene": p.sceneName,
                                "perspective": p.perspective, "sfx": p.sfx,

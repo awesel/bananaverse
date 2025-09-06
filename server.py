@@ -163,6 +163,8 @@ def watcher(run_dir: Path, events: "queue.Queue[Dict[str, Any]]", stop_flag: thr
                 # If a panel is added, rebuild live composite asap
                 if p.parent.name == "panels" and p.name.startswith("panel-"):
                     rebuild_live_comic(run_dir)
+                    # Notify frontend that comic was rebuilt
+                    events.put({"type": "comic_rebuilt"})
             if payload["files"]:
                 events.put(payload)
 
@@ -185,6 +187,9 @@ def watcher(run_dir: Path, events: "queue.Queue[Dict[str, Any]]", stop_flag: thr
                     "characters": [{"file": f, "name": label_from_path(f)} for f in char_files],
                     "scenes": [{"file": f, "name": label_from_path(f)} for f in scene_files]
                 })
+                # Rebuild comic when new assets are available (they may be used in existing panels)
+                rebuild_live_comic(run_dir)
+                events.put({"type": "comic_rebuilt"})
             time.sleep(0.5)
         except Exception as e:
             events.put({"type": "error", "message": str(e)})
@@ -348,6 +353,7 @@ def run_pipeline_with_events(story_text: str, out_root: Path, events: "queue.Que
             "file": f"panels/{fname}",
             "base_file": f"panels/{base_fname}",
             "text_file": text_file,
+            "prompt": p.prompt,  # Add the visual description prompt
             "dialogue": dialogue_strings,
             "narration": p.narration,
             "characters": p.characterNames,
