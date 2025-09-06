@@ -1,5 +1,4 @@
-# comic_e2e.py
-import textwrap
+# main.py
 from typing import Literal
 import os
 import io
@@ -29,10 +28,9 @@ if not API_KEY:
 # Models (override via env if your account uses different names)
 # text planning
 LLM_MODEL = os.getenv("PLANNING_MODEL", "gemini-2.5-flash")
-# initial image (no text)
-IMAGEN_MODEL = os.getenv("IMAGEN_MODEL", "imagen-4.0-generate-001")
-IMAGEN_FALLBACK_MODEL = os.getenv(
-    "IMAGEN_FALLBACK_MODEL", "gemini-2.5-flash-image-preview")
+# nano banana flash for all image generation
+NANO_IMAGE_MODEL = os.getenv(
+    "NANO_IMAGE_MODEL", "gemini-2.5-flash-image-preview")
 NANO_EDIT_MODEL = os.getenv(
     "NANO_EDIT_MODEL", "gemini-2.5-flash-image-preview")   # edit to add bubbles
 
@@ -60,8 +58,8 @@ SCENE_PROMPT_TEMPLATE = load_prompt("scene_extraction")
 PANEL_PROMPT_TEMPLATE = load_prompt("panelization")
 
 # Runtime templates
-CHAR_REF_IMAGEN_TPL = load_prompt("char_ref_imagen")
-SCENE_REF_IMAGEN_TPL = load_prompt("scene_ref_imagen")
+CHAR_REF_NANO_TPL = load_prompt("char_ref_nano")
+SCENE_REF_NANO_TPL = load_prompt("scene_ref_nano")
 PANEL_BASE_NANO_TPL = load_prompt("panel_base_nano")
 PANEL_EDIT_NANO_TPL = load_prompt("panel_edit_nano")
 PANEL_COMBINED_NANO_TPL = load_prompt("panel_combined_nano")
@@ -175,6 +173,186 @@ def pad_to_square(img: Image.Image, size: int = PANEL_SIZE) -> Image.Image:
     return canvas
 
 
+def wrap_text(text: str, font, max_width: int, draw) -> List[str]:
+    """
+    Wrap text to fit within a maximum width, breaking at word boundaries.
+    """
+    words = text.split()
+    lines = []
+    current_line = ""
+
+    for word in words:
+        test_line = current_line + (" " if current_line else "") + word
+        bbox = draw.textbbox((0, 0), test_line, font=font)
+        test_width = bbox[2] - bbox[0]
+
+        if test_width <= max_width:
+            current_line = test_line
+        else:
+            if current_line:
+                lines.append(current_line)
+                current_line = word
+            else:
+                # Single word is too long, just add it anyway
+                lines.append(word)
+                current_line = ""
+
+    if current_line:
+        lines.append(current_line)
+
+    return lines
+
+
+def add_text_rectangles_to_panel(panel_img: Image.Image, panel: Panel) -> Image.Image:
+    """
+    Mechanically add text to a panel using PIL with simple rectangles.
+    This creates clean, readable text that Nano can later convert to speech bubbles.
+    """
+    if not panel.dialogue and not panel.narration:
+        return panel_img
+
+    # Work on a copy
+    img = panel_img.copy()
+    draw = ImageDraw.Draw(img)
+
+    # Try to load a good font for speech bubbles
+    font = None
+    font_size = 20  # Slightly smaller for better fit
+    try:
+        font_paths = [
+            "/System/Library/Fonts/Helvetica.ttc",  # macOS
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",  # Linux
+            "arial.ttf"  # Windows
+        ]
+        for font_path in font_paths:
+            try:
+                font = ImageFont.truetype(font_path, font_size)
+                break
+            except:
+                continue
+        if font is None:
+            font = ImageFont.load_default()
+    except:
+        font = ImageFont.load_default()
+
+    # Panel dimensions
+    width, height = img.size
+
+    # Maximum width for text (about 40% of panel width)
+    max_text_width = int(width * 0.35)
+
+    # Track used areas to avoid overlap
+    used_areas = []
+
+    # Add dialogue rectangles
+    for i, dialogue_line in enumerate(panel.dialogue):
+        # Format text with speaker name
+        text = f"{dialogue_line.speaker}: {dialogue_line.text}"
+
+        # Wrap text to fit within reasonable width
+        wrapped_lines = wrap_text(text, font, max_text_width, draw)
+
+        # Calculate dimensions for wrapped text
+        line_height = draw.textbbox((0, 0), "Ay", font=font)[
+            3] - draw.textbbox((0, 0), "Ay", font=font)[1]
+        total_text_height = line_height * len(wrapped_lines)
+
+        # Find the widest line for rectangle width
+        max_line_width = 0
+        for line in wrapped_lines:
+            bbox = draw.textbbox((0, 0), line, font=font)
+            line_width = bbox[2] - bbox[0]
+            max_line_width = max(max_line_width, line_width)
+
+        # Add padding for rectangle
+        padding = 8
+        rect_width = max_line_width + 2 * padding
+        rect_height = total_text_height + 2 * padding
+
+        # Position rectangles - try different locations to avoid overlap
+        positions_to_try = [
+            # Top areas
+            (width * 0.1, height * 0.1),
+            (width * 0.6, height * 0.1),
+            # Middle areas
+            (width * 0.1, height * 0.4),
+            (width * 0.6, height * 0.4),
+            # Bottom areas
+            (width * 0.1, height * 0.7),
+            (width * 0.6, height * 0.7),
+        ]
+
+        # Find a position that doesn't overlap with used areas
+        rect_x, rect_y = positions_to_try[i % len(positions_to_try)]
+
+        # Ensure rectangle fits within image bounds
+        rect_x = max(0, min(rect_x, width - rect_width))
+        rect_y = max(0, min(rect_y, height - rect_height))
+
+        # Draw white rectangle with black border
+        draw.rectangle([rect_x, rect_y, rect_x + rect_width, rect_y + rect_height],
+                       fill="white", outline="black", width=2)
+
+        # Draw wrapped text in rectangle
+        text_x = rect_x + padding
+        text_y = rect_y + padding
+
+        for line_idx, line in enumerate(wrapped_lines):
+            line_y = text_y + (line_idx * line_height)
+            draw.text((text_x, line_y), line, fill="black", font=font)
+
+        # Track this area as used
+        used_areas.append(
+            (rect_x, rect_y, rect_x + rect_width, rect_y + rect_height))
+
+    # Add narration rectangle if present
+    if panel.narration:
+        text = f"Narration: {panel.narration}"
+
+        # Wrap narration text as well
+        # Slightly wider for narration
+        wrapped_lines = wrap_text(text, font, max_text_width * 1.5, draw)
+
+        # Calculate dimensions for wrapped text
+        line_height = draw.textbbox((0, 0), "Ay", font=font)[
+            3] - draw.textbbox((0, 0), "Ay", font=font)[1]
+        total_text_height = line_height * len(wrapped_lines)
+
+        # Find the widest line for rectangle width
+        max_line_width = 0
+        for line in wrapped_lines:
+            bbox = draw.textbbox((0, 0), line, font=font)
+            line_width = bbox[2] - bbox[0]
+            max_line_width = max(max_line_width, line_width)
+
+        # Add padding for rectangle
+        padding = 8
+        rect_width = max_line_width + 2 * padding
+        rect_height = total_text_height + 2 * padding
+
+        # Position at bottom center for narration
+        rect_x = (width - rect_width) // 2
+        rect_y = height - rect_height - 20  # 20px from bottom
+
+        # Ensure rectangle fits within image bounds
+        rect_x = max(0, min(rect_x, width - rect_width))
+        rect_y = max(0, min(rect_y, height - rect_height))
+
+        # Draw yellow rectangle with black border for narration
+        draw.rectangle([rect_x, rect_y, rect_x + rect_width, rect_y + rect_height],
+                       fill="yellow", outline="black", width=2)
+
+        # Draw wrapped narration text
+        text_x = rect_x + padding
+        text_y = rect_y + padding
+
+        for line_idx, line in enumerate(wrapped_lines):
+            line_y = text_y + (line_idx * line_height)
+            draw.text((text_x, line_y), line, fill="black", font=font)
+
+    return img
+
+
 def resize_to_fill(img: Image.Image, size: int = PANEL_SIZE) -> Image.Image:
     """Resize image to fill the entire square without padding/whitespace."""
     w, h = img.size
@@ -241,6 +419,7 @@ def audit_and_patch_cast(story: str, characters: List[Character]) -> List[Charac
 def patch_panels_for_entities(panels: List[Panel], characters: List[Character]):
     """Ensure entities appear in the right panels with proper visual cues"""
     cast = {c.name for c in characters}
+
     for p in panels:
         # Normalize dialogue
         normalize_dialogue(p)
@@ -251,18 +430,6 @@ def patch_panels_for_entities(panels: List[Panel], characters: List[Character]):
         if any(k in panel_text for k in ["courier", "hawk"]):
             if "Mechanical Hawk" in cast and "Mechanical Hawk" not in p.characterNames:
                 p.characterNames.append("Mechanical Hawk")
-
-        # Add recommended cues for this specific story
-        if p.index == 2 and "WHOOSH" not in p.sfx:
-            p.sfx.append("WHOOSH")
-            p.visualCues.append("papers_fly_directional")
-        if p.index == 3 and "wing_shadow_passing_overhead" not in p.visualCues:
-            p.visualCues.append("wing_shadow_passing_overhead")
-        if p.index == 5:
-            p.sfx.extend([s for s in ["CLACK", "WHIRR"] if s not in p.sfx])
-            for cue in ["red_eye_blink", "leg_tube_payload"]:
-                if cue not in p.visualCues:
-                    p.visualCues.append(cue)
 
 
 def build_character_descriptors(p: Panel, all_chars: List[Character]) -> str:
@@ -277,101 +444,6 @@ def build_character_descriptors(p: Panel, all_chars: List[Character]) -> str:
                       "present")
         descs.append(f"{c.name}: {c.appearance}. In this panel: {action}.")
     return " | ".join(descs) if descs else "As applicable."
-
-
-def draw_caption_box(img: Image.Image, text: str, position: str = "top") -> Image.Image:
-    """
-    Draw a styled caption box on the image with the given text.
-    Position can be "top", "bottom", "top_left", "top_right", "bottom_left", "bottom_right"
-    """
-    if not text or not text.strip():
-        return img
-
-    # Create a copy to avoid modifying the original
-    result = img.copy()
-    draw = ImageDraw.Draw(result)
-
-    # Try to load a font, fallback to default
-    try:
-        font_paths = [
-            "/System/Library/Fonts/Helvetica.ttc",  # macOS
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",  # Linux
-            "arial.ttf"  # Windows
-        ]
-        font = None
-        for font_path in font_paths:
-            try:
-                font = ImageFont.truetype(font_path, 24)
-                break
-            except:
-                continue
-        if font is None:
-            font = ImageFont.load_default()
-    except:
-        font = ImageFont.load_default()
-
-    # Word wrap text to prevent overflow
-    max_width = int(result.size[0] * 0.8)
-    wrapped = textwrap.fill(text, width=42)  # Coarse font-independent fallback
-
-    # Calculate text dimensions using multiline
-    text_bbox = draw.multiline_textbbox((0, 0), wrapped, font=font, spacing=4)
-    text_width = text_bbox[2] - text_bbox[0]
-    text_height = text_bbox[3] - text_bbox[1]
-
-    # Add padding around text
-    padding = 12
-    box_width = text_width + 2 * padding
-    box_height = text_height + 2 * padding
-
-    # Get image dimensions
-    img_width, img_height = result.size
-
-    # Calculate position based on the position parameter
-    if position == "top":
-        x = (img_width - box_width) // 2
-        y = 20
-    elif position == "bottom":
-        x = (img_width - box_width) // 2
-        y = img_height - box_height - 20
-    elif position == "top_left":
-        x = 20
-        y = 20
-    elif position == "top_right":
-        x = img_width - box_width - 20
-        y = 20
-    elif position == "bottom_left":
-        x = 20
-        y = img_height - box_height - 20
-    elif position == "bottom_right":
-        x = img_width - box_width - 20
-        y = img_height - box_height - 20
-    else:
-        # Default to top center
-        x = (img_width - box_width) // 2
-        y = 20
-
-    # Ensure the box stays within image bounds
-    x = max(0, min(x, img_width - box_width))
-    y = max(0, min(y, img_height - box_height))
-
-    # Draw caption box with rounded corners
-    corner_radius = 8
-    draw.rounded_rectangle(
-        [x, y, x + box_width, y + box_height],
-        radius=corner_radius,
-        fill="white",
-        outline="black",
-        width=2
-    )
-
-    # Draw text using multiline
-    text_x = x + padding
-    text_y = y + padding
-    draw.multiline_text((text_x, text_y), wrapped,
-                        fill="black", font=font, spacing=4)
-
-    return result
 
 
 def create_comic_layout(panels: List[bytes], title: str, panel_size: int = PANEL_SIZE) -> Image.Image:
@@ -502,54 +574,27 @@ class GAIC:
         )
         return resp.parsed
 
-    def generate_image_imagen(self, prompt: str, model: str = None) -> bytes:
+    def generate_image_with_nano(self, prompt: str, base_image: Optional[bytes] = None, model: str = NANO_IMAGE_MODEL) -> bytes:
         """
-        Generate a base image using Imagen 4.0 via models.generate_images.
+        Generate an image using nano banana flash model.
+        If base_image is provided, edit that image. Otherwise, generate from scratch.
         Returns PNG bytes.
         """
-        if model is None:
-            model = os.getenv("IMAGEN_MODEL", "imagen-4.0-generate-001")
+        parts: List[Any] = []
 
-        # Call the Imagen 4 endpoint
-        resp = self.client.models.generate_images(
-            model=model,
-            prompt=prompt,
-            config=types.GenerateImagesConfig(
-                number_of_images=1,   # we just need the first
-                # You can add more here if your account supports them, e.g.:
-                # aspect_ratio="1:1",  # if available to your tenant
-            ),
-        )
+        if base_image:
+            # Edit mode: start with base image
+            parts.append({"inline_data": {"mime_type": "image/png",
+                         "data": base64.b64encode(base_image).decode("utf-8")}})
 
-        if not getattr(resp, "generated_images", None):
-            # Optional: fallback to a Gemini image model if available
-            fallback = os.getenv("IMAGEN_FALLBACK_MODEL",
-                                 "gemini-2.5-flash-image-preview")
-            print(
-                f"[warn] Imagen returned no images; falling back to {fallback}")
-            alt = self.client.models.generate_content(
-                model=fallback, contents=prompt)
-            for cand in alt.candidates:
-                for part in cand.content.parts:
-                    if getattr(part, "inline_data", None) and getattr(part.inline_data, "data", None):
-                        return part.inline_data.data
-            raise RuntimeError("No image returned by Imagen or fallback.")
+        parts.append(prompt)
 
-        # The SDK's .image object has an image_bytes property with the raw image data.
-        # We'll use this to create a standard PIL Image object.
-        sdk_image = resp.generated_images[0].image
-
-        # 1. Get the raw image bytes from the SDK object.
-        image_bytes = sdk_image.image_bytes
-
-        # 2. Create a BytesIO buffer from the raw bytes.
-        buffer = io.BytesIO(image_bytes)
-
-        # 3. Open the image data from the buffer into a standard PIL Image.
-        true_pil_image = Image.open(buffer)
-
-        # 4. Now, convert this standard PIL Image to PNG bytes.
-        return pil_to_png_bytes(true_pil_image)
+        resp = self.client.models.generate_content(model=model, contents=parts)
+        for cand in resp.candidates:
+            for part in cand.content.parts:
+                if getattr(part, "inline_data", None) and getattr(part.inline_data, "data", None):
+                    return base64.b64decode(part.inline_data.data)
+        raise RuntimeError("Nano image generation returned no image data.")
 
     def edit_image_with_nano(self, base_image: bytes, instruction: str, ref_images: Optional[List[bytes]] = None,
                              model: str = NANO_EDIT_MODEL) -> bytes:
@@ -636,11 +681,11 @@ def panelize_story(g: GAIC, story: str, scenes: List[Scene], log: PromptLogger) 
 
 
 def build_char_ref_prompt(c: Character) -> str:
-    return CHAR_REF_IMAGEN_TPL.format(appearance=c.appearance, STYLE_PRESET=STYLE_PRESET)
+    return CHAR_REF_NANO_TPL.format(appearance=c.appearance, STYLE_PRESET=STYLE_PRESET)
 
 
 def build_scene_ref_prompt(s: Scene) -> str:
-    return SCENE_REF_IMAGEN_TPL.format(setting=s.setting, description=s.description, STYLE_PRESET=STYLE_PRESET)
+    return SCENE_REF_NANO_TPL.format(setting=s.setting, description=s.description, STYLE_PRESET=STYLE_PRESET)
 
 
 def build_panel_base_instruction(p: Panel, characters: List[Character]) -> str:
@@ -674,20 +719,42 @@ def build_panel_base_instruction(p: Panel, characters: List[Character]) -> str:
 
 
 def build_nano_edit_instruction(p: Panel) -> str:
+    """
+    Build instruction for Nano to convert PIL text rectangles into proper speech bubbles.
+    This assumes the image already has mechanically-placed text in rectangles.
+    """
     parts = []
     if p.dialogue:
-        lines = "\n".join(f"- {d.speaker}: {d.text}" + (" (whisper)" if d.whisper else "")
-                          for d in p.dialogue)
+        speaker_list = ", ".join([d.speaker for d in p.dialogue])
         parts.append(
-            f"Add clean, readable speech bubbles with this text:\n{lines}")
+            f"Convert the white text rectangles into proper comic speech bubbles. The speakers are: {speaker_list}")
+        parts.append(
+            "Add bubble tails pointing toward the appropriate characters when possible")
+        parts.append(
+            "DO NOT move or reposition the text - keep the text in exactly the same location")
+        parts.append(
+            "Only change the white rectangular border into a rounded speech bubble shape and add a tail")
+
     if p.narration:
         parts.append(
-            f"Add a narration caption box with this text: {p.narration}")
+            "Convert the yellow narration rectangle into a proper comic caption box")
+        parts.append("Keep the narration text in exactly the same position")
+        parts.append(
+            "Only change the rectangular border into a caption box style")
+
     if p.sfx:
-        parts.append("Place small SFX labels: " + ", ".join(p.sfx))
+        parts.append("Add small SFX labels: " + ", ".join(p.sfx))
 
     if parts:
-        return PANEL_EDIT_NANO_TPL.format(bubble_text_lines="\n\n".join(parts))
+        instruction = "Transform the text rectangles in this image into proper comic book elements:\n\n" + \
+            "\n".join(f"- {part}" for part in parts)
+        instruction += "\n\nCRITICAL REQUIREMENTS:"
+        instruction += "\n- Keep ALL existing text in exactly the same position and formatting"
+        instruction += "\n- Do NOT move, resize, or reformat any text"
+        instruction += "\n- Only change the rectangular containers into bubble/caption shapes"
+        instruction += "\n- Add bubble tails/pointers where appropriate"
+        instruction += "\n- Preserve all line breaks and text wrapping exactly as shown"
+        return instruction
     else:
         return "Make minor composition adjustments; do not add text."
 
@@ -809,13 +876,13 @@ def run_pipeline(story_text: str, out_root: Path):
     panels_dir = out_root / "panels"
     ensure_dir(panels_dir)
 
-    # Character refs via Imagen 4
-    print(">> Generating character references (Imagen 4)...")
+    # Character refs via Nano banana Flash
+    print(">> Generating character references (Nano Banana Flash)...")
     name_to_ref_bytes: Dict[str, bytes] = {}
     for c in characters:
         prompt = build_char_ref_prompt(c)
-        logger.log(f"CHARACTER_REF_IMAGEN_PROMPT [{c.name}]", prompt)
-        raw = g.generate_image_imagen(prompt)
+        logger.log(f"CHARACTER_REF_NANO_PROMPT [{c.name}]", prompt)
+        raw = g.generate_image_with_nano(prompt)
         img = pad_to_square(image_bytes_to_pil(raw), PANEL_SIZE)
         png = pil_to_png_bytes(img)
         fname = f"{slugify(c.name)}.png"
@@ -823,13 +890,13 @@ def run_pipeline(story_text: str, out_root: Path):
         name_to_ref_bytes[c.name.lower()] = png
         print(f"   ✓ {c.name} -> {fname}")
 
-    # Scene refs via Imagen 4
-    print(">> Generating scene references (Imagen 4)...")
+    # Scene refs via Nano bananaFlash
+    print(">> Generating scene references (Nano bananaFlash)...")
     scene_to_ref_bytes: Dict[str, bytes] = {}
     for s in scenes:
         prompt = build_scene_ref_prompt(s)
-        logger.log(f"SCENE_REF_IMAGEN_PROMPT [{s.name}]", prompt)
-        raw = g.generate_image_imagen(prompt)
+        logger.log(f"SCENE_REF_NANO_PROMPT [{s.name}]", prompt)
+        raw = g.generate_image_with_nano(prompt)
         img = pad_to_square(image_bytes_to_pil(raw), PANEL_SIZE)
         png = pil_to_png_bytes(img)
         fname = f"{slugify(s.name)}.png"
@@ -869,31 +936,66 @@ def run_pipeline(story_text: str, out_root: Path):
                 0, previous_panel_bytes)  # Put previous panel first
 
         if USE_COMBINED_PANELS:
-            # Single combined call for cost optimization
-            combined_instruction = build_panel_combined_instruction(
-                p, characters)
+            # Combined approach: Generate scene + characters without dialogue first
+            base_instruction = build_panel_base_instruction(p, characters)
             logger.log(
-                f"PANEL_COMBINED_NANO_PROMPT [#{p.index}]", combined_instruction)
+                f"PANEL_BASE_NANO_PROMPT [#{p.index}]", base_instruction)
 
             try:
-                final_png = g.edit_image_with_nano(
-                    scene_ref_bytes, combined_instruction, ref_images=ref_images_with_continuity)
-                final_img = resize_to_fill(
-                    image_bytes_to_pil(final_png), PANEL_SIZE)
-                final_png = pil_to_png_bytes(final_img)
-                print(
-                    f"   ✓ Combined generation {p.index} -> scene + characters + dialogue")
+                base_png = g.edit_image_with_nano(
+                    scene_ref_bytes, base_instruction, ref_images=ref_images_with_continuity)
+                base_img = resize_to_fill(
+                    image_bytes_to_pil(base_png), PANEL_SIZE)
+                base_png = pil_to_png_bytes(base_img)
+                print(f"   ✓ Combined base {p.index} -> scene + characters")
             except Exception as e:
                 print(
-                    f"   ! Combined generation failed on panel {p.index}: {e}. Using scene reference.")
-                final_img = resize_to_fill(
+                    f"   ! Combined base generation failed on panel {p.index}: {e}. Using scene reference.")
+                base_img = resize_to_fill(
                     image_bytes_to_pil(scene_ref_bytes), PANEL_SIZE)
-                final_png = pil_to_png_bytes(final_img)
+                base_png = pil_to_png_bytes(base_img)
 
-            # For combined approach, we don't have a separate base image
+            # Save base image for compatibility
             base_fname = f"base-panel-{p.index:03d}.png"
-            # Save same as base for compatibility
-            (panels_dir / base_fname).write_bytes(final_png)
+            (panels_dir / base_fname).write_bytes(base_png)
+
+            # Step 1: Add PIL text rectangles to base panel (if dialogue/narration exists)
+            if p.dialogue or p.narration:
+                # Add mechanical text rectangles using PIL
+                base_img_pil = image_bytes_to_pil(base_png)
+                text_img_pil = add_text_rectangles_to_panel(base_img_pil, p)
+                text_png = pil_to_png_bytes(text_img_pil)
+
+                # Save intermediate version with PIL text rectangles
+                text_fname = f"text-panel-{p.index:03d}.png"
+                (panels_dir / text_fname).write_bytes(text_png)
+                print(f"   ✓ Combined PIL text {p.index} -> {text_fname}")
+
+                # Step 2: Pass to Nano to convert rectangles to speech bubbles
+                edit_instruction = build_nano_edit_instruction(p)
+                logger.log(
+                    f"PANEL_EDIT_NANO_PROMPT [#{p.index}]", edit_instruction)
+
+                try:
+                    edited_png = g.edit_image_with_nano(
+                        text_png, edit_instruction, ref_images=char_ref_imgs)
+                    final_img = resize_to_fill(
+                        image_bytes_to_pil(edited_png), PANEL_SIZE)
+                    final_png = pil_to_png_bytes(final_img)
+                    print(
+                        f"   ✓ Combined bubble conversion {p.index} -> converted rectangles to speech bubbles")
+                except Exception as e:
+                    # Fallback: keep PIL text version if Nano edit fails
+                    print(
+                        f"   ! Combined bubble conversion failed on panel {p.index}: {e}. Keeping PIL text version.")
+                    final_img = text_img_pil
+                    final_png = text_png
+            else:
+                # No dialogue or narration, use base image
+                final_img = base_img
+                final_png = base_png
+                print(
+                    f"   ✓ Combined panel {p.index} -> no dialogue/narration, using base image")
         else:
             # Original two-step approach
             # First Nano Banana round: place characters in scene
@@ -920,51 +1022,58 @@ def run_pipeline(story_text: str, out_root: Path):
             (panels_dir / base_fname).write_bytes(base_png)
             print(f"   ✓ Nano base {p.index} -> {base_fname}")
 
-            # Second Nano Banana round: add speech bubbles (only if dialogue exists)
-            if p.dialogue:
+            # Step 1: Add PIL text rectangles to base panel (if dialogue/narration exists)
+            if p.dialogue or p.narration:
+                # Add mechanical text rectangles using PIL
+                base_img_pil = image_bytes_to_pil(base_png)
+                text_img_pil = add_text_rectangles_to_panel(base_img_pil, p)
+                text_png = pil_to_png_bytes(text_img_pil)
+
+                # Save intermediate version with PIL text rectangles
+                text_fname = f"text-panel-{p.index:03d}.png"
+                (panels_dir / text_fname).write_bytes(text_png)
+                print(f"   ✓ PIL text {p.index} -> {text_fname}")
+
+                # Step 2: Pass to Nano to convert rectangles to speech bubbles
                 edit_instruction = build_nano_edit_instruction(p)
                 logger.log(
                     f"PANEL_EDIT_NANO_PROMPT [#{p.index}]", edit_instruction)
 
                 try:
                     edited_png = g.edit_image_with_nano(
-                        base_png, edit_instruction, ref_images=char_ref_imgs)
+                        text_png, edit_instruction, ref_images=char_ref_imgs)
                     final_img = resize_to_fill(
-                        # Use resize_to_fill
                         image_bytes_to_pil(edited_png), PANEL_SIZE)
                     final_png = pil_to_png_bytes(final_img)
-                    print(f"   ✓ Nano edit {p.index} -> added speech bubbles")
-                except Exception as e:
-                    # Fallback: keep base if edit fails
                     print(
-                        f"   ! Nano edit failed on panel {p.index}: {e}. Keeping base image.")
-                    final_img = image_bytes_to_pil(base_png)
-                    final_png = base_png
+                        f"   ✓ Nano bubble conversion {p.index} -> converted rectangles to speech bubbles")
+                except Exception as e:
+                    # Fallback: keep PIL text version if Nano edit fails
+                    print(
+                        f"   ! Nano bubble conversion failed on panel {p.index}: {e}. Keeping PIL text version.")
+                    final_img = text_img_pil
+                    final_png = text_png
             else:
-                # No dialogue, skip nano edit entirely to save API costs
+                # No dialogue or narration, skip text processing entirely to save costs
                 final_img = image_bytes_to_pil(base_png)
                 final_png = base_png
                 print(
-                    f"   ✓ Panel {p.index} -> no dialogue, skipping nano edit (cost savings)")
-
-        # Add narration caption box if needed (using PIL as fallback)
-        if p.narration:
-            try:
-                final_img = image_bytes_to_pil(final_png)
-                final_img_with_caption = draw_caption_box(
-                    final_img, p.narration, "top")
-                final_png = pil_to_png_bytes(final_img_with_caption)
-                print(f"   ✓ Added narration caption to panel {p.index}")
-            except Exception as e:
-                print(f"   ! Failed to add caption to panel {p.index}: {e}")
+                    f"   ✓ Panel {p.index} -> no dialogue/narration, skipping text processing (cost savings)")
 
         # Save final panel image
         fname = f"panel-{p.index:03d}.png"
         (panels_dir / fname).write_bytes(final_png)
         # Convert structured dialogue back to simple format for manifest
         dialogue_strings = [f"{d.speaker}: {d.text}" for d in p.dialogue]
+
+        # Determine text file name if dialogue/narration exists
+        text_file = None
+        if p.dialogue or p.narration:
+            text_file = f"panels/text-panel-{p.index:03d}.png"
+
         panel_manifest.append({"index": p.index, "file": f"panels/{fname}",
                               "base_file": f"panels/{base_fname}",
+                               "text_file": text_file,  # New field for PIL text version
                                "dialogue": dialogue_strings, "narration": p.narration,
                                "characters": p.characterNames, "scene": p.sceneName,
                                "perspective": p.perspective, "sfx": p.sfx,
