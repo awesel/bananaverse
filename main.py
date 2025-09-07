@@ -374,7 +374,7 @@ def add_text_rectangles_to_panel(panel_img: Image.Image, panel: Panel) -> Image.
 
     # Try to load a good font for speech bubbles
     font = None
-    font_size = 46  # Increased by 66% from 28 for better readability
+    font_size = 32  # Reduced to 70% of previous size (46) for better fit
     try:
         font_paths = [
             "/System/Library/Fonts/Helvetica.ttc",  # macOS
@@ -1186,6 +1186,18 @@ def run_pipeline(story_text: str, out_root: Path, user_input: str = None):
         print(">> Rendering panels (Combined approach: scene + characters + dialogue in one call)...")
     else:
         print(">> Rendering panels (Two-step approach: scene + characters → speech bubbles)...")
+
+    # CRITICAL: Reload all character images from disk before panel generation
+    # This ensures any uploaded custom sprites are used instead of cached originals
+    print(">> Reloading character sprites from disk...")
+    for c in characters:
+        fname = f"{slugify(c.name)}.png"
+        char_file = chars_dir / fname
+        if char_file.exists():
+            # Reload the character image from disk (may be user-uploaded)
+            char_png = char_file.read_bytes()
+            name_to_ref_bytes[c.name.lower()] = char_png
+            print(f"   ✓ Reloaded {c.name} -> {fname}")
 
     panel_manifest = []
     previous_panel_bytes = None  # For continuity feeding

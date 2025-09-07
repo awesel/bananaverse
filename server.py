@@ -28,6 +28,12 @@ class RunState:
         self.events: "queue.Queue[Dict[str, Any]]" = queue.Queue()
         self.thread: Optional[threading.Thread] = None
         self.stop_flag = threading.Event()
+        # Cache for character reference images
+        self.name_to_ref_bytes: Dict[str, bytes] = {}
+        # Mapping from filename to character name
+        self.filename_to_char_name: Dict[str, str] = {}
+        # Event to control pipeline flow - wait for user to continue after sprite upload
+        self.continue_generation_event = threading.Event()
 
 
 state = RunState()
@@ -273,7 +279,7 @@ def run_pipeline_with_events(story_text: str, out_root: Path, events: "queue.Que
     # Step 3: Generate character references
     events.put({"type": "step", "step": "character_refs",
                "message": "Generating character references..."})
-    name_to_ref_bytes = {}
+    state.name_to_ref_bytes = {}  # Reset the cache for this run
     for i, c in enumerate(characters):
         events.put({"type": "step_progress", "step": "character_refs",
                    "current": i + 1, "total": len(characters), "item": c.name})
@@ -284,10 +290,47 @@ def run_pipeline_with_events(story_text: str, out_root: Path, events: "queue.Que
         png = pil_to_png_bytes(img)
         fname = f"{slugify(c.name)}.png"
         (chars_dir / fname).write_bytes(png)
-        name_to_ref_bytes[c.name.lower()] = png
+        state.name_to_ref_bytes[c.name.lower()] = png
 
     events.put({"type": "step_complete", "step": "character_refs",
                "count": len(characters)})
+
+    # Trigger sprite upload window with character info
+    character_sprites = [
+        {"name": c.name, "filename": f"{slugify(c.name)}.png"} for c in characters]
+    # Store filename to character name mapping for later use
+    state.filename_to_char_name = {
+        f"{slugify(c.name)}.png": c.name.lower() for c in characters}
+    events.put({"type": "sprite_upload_ready",
+               "characters": character_sprites})
+
+    # Wait for user to continue generation (or timeout after 10 minutes)
+    events.put({"type": "waiting_for_user",
+               "message": "Waiting for user to continue generation..."})
+    state.continue_generation_event.clear()  # Reset the event
+    # 10 minute timeout
+    if not state.continue_generation_event.wait(timeout=600):
+        events.put({"type": "step", "step": "user_timeout",
+                   "message": "Continuing automatically after timeout..."})
+    else:
+        events.put({"type": "step", "step": "user_continued",
+                   "message": "User chose to continue generation"})
+
+    # CRITICAL: Reload all character images from disk RIGHT AFTER continue/timeout
+    # This ensures any uploaded custom sprites are loaded before ANY further generation
+    events.put({"type": "step", "step": "reloading_characters",
+               "message": "Loading character sprites from disk..."})
+
+    for c in characters:
+        fname = f"{slugify(c.name)}.png"
+        char_file = chars_dir / fname
+        if char_file.exists():
+            # Reload the character image from disk (may be user-uploaded)
+            char_png = char_file.read_bytes()
+            state.name_to_ref_bytes[c.name.lower()] = char_png
+
+    events.put({"type": "step_complete", "step": "reloading_characters",
+               "message": "Character sprites reloaded from disk"})
 
     # Step 4: Generate scene references
     events.put({"type": "step", "step": "scene_refs",
@@ -311,6 +354,7 @@ def run_pipeline_with_events(story_text: str, out_root: Path, events: "queue.Que
     # Step 5: Generate panels
     events.put({"type": "step", "step": "panels",
                "message": "Generating comic panels..."})
+
     panel_manifest = []
     previous_panel_bytes = None
 
@@ -329,8 +373,8 @@ def run_pipeline_with_events(story_text: str, out_root: Path, events: "queue.Que
                 f"No scene reference available for panel {p.index}")
 
         # Gather ref images for characters in this panel
-        char_ref_imgs = [name_to_ref_bytes[n.lower()]
-                         for n in p.characterNames if n.lower() in name_to_ref_bytes]
+        char_ref_imgs = [state.name_to_ref_bytes[n.lower()]
+                         for n in p.characterNames if n.lower() in state.name_to_ref_bytes]
 
         # Add previous panel for continuity if available
         ref_images_with_continuity = char_ref_imgs.copy()
@@ -500,6 +544,7 @@ def api_start():
     state.current_run_dir = run_dir
     state.events = queue.Queue()
     state.stop_flag = threading.Event()
+    state.continue_generation_event.clear()  # Reset continue event for new run
 
     # Launch worker
     t = threading.Thread(target=pipeline_worker, args=(
@@ -557,6 +602,103 @@ def api_file():
     if p.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}:
         return send_file(str(p))
     return Response(p.read_text(encoding="utf-8"), mimetype="text/plain")
+
+
+@app.route("/api/continue_generation", methods=["POST"])
+def api_continue_generation():
+    """Signal the pipeline to continue after sprite upload window."""
+    data = request.get_json(force=True)
+    run = data.get("run")
+
+    if not run:
+        return jsonify({"error": "Missing run"}), 400
+
+    run_dir = OUTPUT_DIR / run
+    if not run_dir.exists():
+        return jsonify({"error": "Run not found"}), 404
+
+    # Only continue if this is the current run
+    if state.current_run_dir == run_dir:
+        state.continue_generation_event.set()  # Signal the pipeline to continue
+        return jsonify({"success": True, "message": "Generation will continue"})
+    else:
+        return jsonify({"error": "Not the current run"}), 400
+
+
+@app.route("/api/upload_sprite", methods=["POST"])
+def api_upload_sprite():
+    """Upload a custom sprite to replace an existing character sprite."""
+    run = request.form.get("run")
+    filename = request.form.get("filename")
+
+    if not run or not filename:
+        return jsonify({"error": "Missing run or filename"}), 400
+
+    if 'file' not in request.files:
+        return jsonify({"error": "No file provided"}), 400
+
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({"error": "No file selected"}), 400
+
+    # Validate file type
+    if not file.filename.lower().endswith(('.png', '.jpg', '.jpeg')):
+        return jsonify({"error": "Only PNG and JPEG files are allowed"}), 400
+
+    run_dir = OUTPUT_DIR / run
+    if not run_dir.exists():
+        return jsonify({"error": "Run not found"}), 404
+
+    chars_dir = run_dir / "characters"
+    target_file = chars_dir / filename
+
+    # Check if the target file exists (must be replacing an existing sprite)
+    if not target_file.exists():
+        return jsonify({"error": f"Character sprite '{filename}' not found"}), 404
+
+    try:
+        # Process the uploaded image to match the expected format
+        from PIL import Image
+        import io
+
+        # Read and process the uploaded image
+        image_data = file.read()
+        img = Image.open(io.BytesIO(image_data))
+
+        # Convert to RGB if necessary (removes alpha channel for JPEG compatibility)
+        if img.mode in ('RGBA', 'LA'):
+            background = Image.new('RGB', img.size, (255, 255, 255))
+            if img.mode == 'RGBA':
+                background.paste(img, mask=img.split()[-1])
+            else:
+                background.paste(img, mask=img.split()[-1])
+            img = background
+        elif img.mode != 'RGB':
+            img = img.convert('RGB')
+
+        # Resize to match panel size and pad to square
+        img = pad_to_square(img, PANEL_SIZE)
+
+        # Save as PNG
+        png_bytes = pil_to_png_bytes(img)
+        target_file.write_bytes(png_bytes)
+
+        # Update the in-memory cache with the new sprite
+        # Use the filename to character name mapping
+        if filename in state.filename_to_char_name:
+            char_name = state.filename_to_char_name[filename]
+            state.name_to_ref_bytes[char_name] = png_bytes
+
+        # Trigger a comic rebuild to use the new sprite
+        if state.current_run_dir == run_dir:
+            rebuild_live_comic(run_dir)
+            state.events.put({"type": "comic_rebuilt"})
+            state.events.put({"type": "sprite_uploaded", "filename": filename})
+
+        return jsonify({"success": True, "message": f"Sprite '{filename}' uploaded successfully"})
+
+    except Exception as e:
+        return jsonify({"error": f"Failed to process image: {str(e)}"}), 500
 
 
 if __name__ == "__main__":
