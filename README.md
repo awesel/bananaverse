@@ -3,12 +3,13 @@ This is my project for the Nano Banana Hackathon from Google DeepMind. I made a 
 Features
 - You can enter a story, or have AI generate a story about a concept. I like to have the AI generate a story where a student and teacher have a conversation about something I want to learn.
 - It will generate sprites for scenes and characters. You can override any of these if you wish to include yourself or one of your drawings in the story. This step is what makes the comics have continuity instead of recreating each character in each panel
-- It will then generate panels and stitch them together live.
+- It will then generate panels and stitch them together live. The generations can be arbitrarily long, as long as the description of the panels and the story fits in Gemini's 1 millino token context window.
 
 To run:
-1. Set up a venv. Run the command below to make your workspace identical to mine.
-2. Set your GEMINI_API_KEY and FAL_API_KEY in a .env, or using EXPORT
-3. Run 'python server.py' and visit your localhost!
+1. git clone https://github.com/awesel/bananaverse && cd bananaverse
+2. Set up a venv by running the long command below.
+3. Set your GEMINI_API_KEY and FAL_API_KEY in .env
+4. Run 'python server.py' and visit localhost in your browser!
 
 python3 -m venv .venv && source .venv/bin/activate && pip install \
 annotated-types==0.7.0 anyio==4.10.0 blinker==1.9.0 cachetools==5.5.2 \
