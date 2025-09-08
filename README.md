@@ -1,7 +1,12 @@
 This is my project for the Nano Banana Hackathon from Google DeepMind. I made a little graphic novel generator.
 
+Features
+- You can enter a story, or have AI generate a story about a concept. I like to have the AI generate a story where a student and teacher have a conversation about something I want to learn.
+- It will generate sprites for scenes and characters. You can override any of these if you wish to include yourself or one of your drawings in the story
+- It will then generate panels and stitch them together live.
+
 To run:
-1. Set up a venv. Command below to make your workspace identical to mine.
+1. Set up a venv. Run the command below to make your workspace identical to mine.
 2. Set your GEMINI_API_KEY and FAL_API_KEY in a .env, or using EXPORT
 3. Run 'python server.py' and visit your localhost!
 
