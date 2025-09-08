@@ -591,7 +591,7 @@ def build_character_descriptors(p: Panel, all_chars: List[Character]) -> str:
     return " | ".join(descs) if descs else "As applicable."
 
 
-def create_title_panel(g: "GAIC", title: str, logger: "PromptLogger", panel_size: int = PANEL_SIZE) -> bytes:
+def create_title_panel(g: "GAIC", title: str, logger: "PromptLogger", panel_size: int = PANEL_SIZE, character_refs: Optional[List[bytes]] = None) -> bytes:
     """Create a title panel with the comic title using Nano Banana image generation."""
     # Build the title generation prompt
     title_prompt = f"""Please generate a comic book title image with the text "{title}". 
@@ -603,7 +603,16 @@ Style requirements:
 - Professional comic book cover style
 - The title text should be prominent and clearly readable
 - Use dynamic composition and striking visual design
-- Make it look like a proper comic book title panel
+- Make it look like a proper comic book title panel"""
+
+    # Add character guidance if references are provided
+    if character_refs:
+        title_prompt += """
+- Include visual elements that reference the main characters from the story
+- The characters should complement the title design without overwhelming the text
+- Use the provided character reference images to maintain visual consistency"""
+
+    title_prompt += f"""
 
 The title text is: "{title}"
 
@@ -612,8 +621,12 @@ Create a visually striking title image that would work as the opening panel of a
     logger.log("TITLE_PANEL_NANO_PROMPT", title_prompt)
 
     try:
-        # Generate title panel using Nano Banana
-        title_image_bytes = g.generate_image_with_nano(title_prompt)
+        # Generate title panel using Nano Banana with character references
+        if character_refs:
+            title_image_bytes = g.generate_image_with_nano(
+                title_prompt, ref_images=character_refs)
+        else:
+            title_image_bytes = g.generate_image_with_nano(title_prompt)
 
         # Resize to proper panel size
         title_img = resize_to_fill(
@@ -668,13 +681,14 @@ Create a visually striking title image that would work as the opening panel of a
         return pil_to_png_bytes(canvas)
 
 
-def create_comic_layout(panels: List[bytes], title: str, g: "GAIC", logger: "PromptLogger", panel_size: int = PANEL_SIZE) -> Image.Image:
+def create_comic_layout(panels: List[bytes], title: str, g: "GAIC", logger: "PromptLogger", panel_size: int = PANEL_SIZE, character_refs: Optional[List[bytes]] = None) -> Image.Image:
     """Stitch panels together into a comic book layout with title panel as first panel."""
     if not panels:
         raise ValueError("No panels to stitch together")
 
     # Create title panel and add it as the first panel
-    title_panel_bytes = create_title_panel(g, title, logger, panel_size)
+    title_panel_bytes = create_title_panel(
+        g, title, logger, panel_size, character_refs)
     all_panels = [title_panel_bytes] + panels
 
     # Calculate layout - 2 columns max
@@ -766,10 +780,11 @@ class GAIC:
         )
         return resp.parsed
 
-    def generate_image_with_nano(self, prompt: str, base_image: Optional[bytes] = None, model: str = NANO_IMAGE_MODEL) -> bytes:
+    def generate_image_with_nano(self, prompt: str, base_image: Optional[bytes] = None, ref_images: Optional[List[bytes]] = None, model: str = NANO_IMAGE_MODEL) -> bytes:
         """
         Generate an image using Fal AI nano banana model.
         If base_image is provided, edit that image. Otherwise, generate from scratch.
+        If ref_images are provided, use them as additional reference images.
         Returns PNG bytes.
         """
         try:
@@ -777,12 +792,45 @@ class GAIC:
                 # Edit mode: use image-to-image editing
                 base64_data = base64.b64encode(base_image).decode('utf-8')
                 data_uri = f"data:image/png;base64,{base64_data}"
+                image_urls = [data_uri]
+
+                # Add reference images if provided
+                if ref_images:
+                    # Limit to 3 reference images to avoid overwhelming the API
+                    for ref_img in ref_images[:3]:
+                        ref_base64 = base64.b64encode(ref_img).decode('utf-8')
+                        ref_data_uri = f"data:image/png;base64,{ref_base64}"
+                        image_urls.append(ref_data_uri)
 
                 result = fal_client.subscribe(
                     "fal-ai/nano-banana/edit",
                     arguments={
                         "prompt": prompt,
-                        "image_urls": [data_uri],
+                        "image_urls": image_urls,
+                        "num_images": 1,
+                        "output_format": "png"
+                    },
+                    with_logs=True,
+                )
+            elif ref_images:
+                # Use first reference image as base and others as additional references
+                primary_ref = ref_images[0]
+                base64_data = base64.b64encode(primary_ref).decode('utf-8')
+                data_uri = f"data:image/png;base64,{base64_data}"
+                image_urls = [data_uri]
+
+                # Add additional reference images
+                # Limit to 2 additional reference images
+                for ref_img in ref_images[1:3]:
+                    ref_base64 = base64.b64encode(ref_img).decode('utf-8')
+                    ref_data_uri = f"data:image/png;base64,{ref_base64}"
+                    image_urls.append(ref_data_uri)
+
+                result = fal_client.subscribe(
+                    "fal-ai/nano-banana/edit",
+                    arguments={
+                        "prompt": prompt,
+                        "image_urls": image_urls,
                         "num_images": 1,
                         "output_format": "png"
                     },
@@ -1023,7 +1071,7 @@ def build_panel_base_instruction(p: Panel, characters: List[Character]) -> str:
 
 
 def build_panel_combined_instruction(p: Panel, characters: List[Character]) -> str:
-    """Build a combined instruction for single-step panel generation with dialogue."""
+    """Build a combined instruction for single-step panel generation WITHOUT dialogue (PIL handles text)."""
     # Use rich character descriptions with appearance fallbacks
     character_info = build_character_descriptors(p, characters)
 
@@ -1046,36 +1094,21 @@ def build_panel_combined_instruction(p: Panel, characters: List[Character]) -> s
     elif p.perspective == "wide_shot":
         perspective_instruction += "Show characters in context of larger environment."
 
-    # Add SFX and visual cues to the instruction
+    # Add SFX and visual cues to the instruction (but not text-based ones)
     fx_bits = []
     if p.sfx:
-        fx_bits.append("Add small onomatopoeia SFX labels: " +
+        # Only include visual SFX effects, not text-based ones
+        fx_bits.append("Include visual effects for these sounds: " +
                        ", ".join(p.sfx))
     if p.visualCues:
         fx_bits.append("Render visual cues: " + ", ".join(p.visualCues))
     fx_text = (" " + ". ".join(fx_bits) + ".") if fx_bits else ""
 
-    # Handle dialogue and narration instruction
-    text_instructions = []
-    if p.dialogue:
-        lines = "\n".join(f"- {d.speaker}: {d.text}" + (" (whisper)" if d.whisper else "")
-                          for d in p.dialogue)
-        text_instructions.append(
-            f"Add clean, readable comic speech bubble(s) with this text:\n{lines}")
-    if p.narration:
-        text_instructions.append(
-            f"Add a narration caption box with this text: {p.narration}")
-
-    if text_instructions:
-        dialogue_instruction = f"Finally, {'. '.join(text_instructions)}."
-    else:
-        dialogue_instruction = "There is no dialogue or narration for this panel."
-
+    # No dialogue instruction - PIL will handle all text
     return PANEL_COMBINED_NANO_TPL.format(
         panel_visual=f"{perspective_instruction}{p.prompt}{fx_text}",
         character_names=character_info,
-        STYLE_PRESET=STYLE_PRESET,
-        dialogue_instruction=dialogue_instruction
+        STYLE_PRESET=STYLE_PRESET
     )
 
 
@@ -1167,6 +1200,34 @@ def run_pipeline(story_text: str, out_root: Path, user_input: str = None):
         name_to_ref_bytes[c.name.lower()] = png
         print(f"   ✓ {c.name} -> {fname}")
 
+    # PAUSE: Allow user to review character sprites and upload custom ones
+    print("\n" + "="*60)
+    print("CHARACTER SPRITES GENERATED!")
+    print("="*60)
+    print(f"Character sprites saved to: {chars_dir}")
+    print("Generated characters:")
+    for c in characters:
+        fname = f"{slugify(c.name)}.png"
+        print(f"  - {c.name} -> {chars_dir / fname}")
+
+    print("\nYou can now:")
+    print("1. Review the generated character sprites")
+    print("2. Replace any sprites with your own custom images")
+    print("3. Keep the same filenames when replacing")
+    print("\nPress ENTER to continue with panel generation...")
+    input()
+
+    # Reload character images from disk (in case user uploaded custom ones)
+    print(">> Reloading character sprites from disk...")
+    for c in characters:
+        fname = f"{slugify(c.name)}.png"
+        char_file = chars_dir / fname
+        if char_file.exists():
+            # Reload the character image from disk (may be user-uploaded)
+            char_png = char_file.read_bytes()
+            name_to_ref_bytes[c.name.lower()] = char_png
+            print(f"   ✓ Reloaded {c.name} -> {fname}")
+
     # Scene refs via Nano banana Flash
     print(">> Generating scene references (Nano bananaFlash)...")
     scene_to_ref_bytes: Dict[str, bytes] = {}
@@ -1186,18 +1247,6 @@ def run_pipeline(story_text: str, out_root: Path, user_input: str = None):
         print(">> Rendering panels (Combined approach: scene + characters + dialogue in one call)...")
     else:
         print(">> Rendering panels (Two-step approach: scene + characters → speech bubbles)...")
-
-    # CRITICAL: Reload all character images from disk before panel generation
-    # This ensures any uploaded custom sprites are used instead of cached originals
-    print(">> Reloading character sprites from disk...")
-    for c in characters:
-        fname = f"{slugify(c.name)}.png"
-        char_file = chars_dir / fname
-        if char_file.exists():
-            # Reload the character image from disk (may be user-uploaded)
-            char_png = char_file.read_bytes()
-            name_to_ref_bytes[c.name.lower()] = char_png
-            print(f"   ✓ Reloaded {c.name} -> {fname}")
 
     panel_manifest = []
     previous_panel_bytes = None  # For continuity feeding
@@ -1377,8 +1426,16 @@ def run_pipeline(story_text: str, out_root: Path, user_input: str = None):
             final_panel_bytes.append(panel_path.read_bytes())
 
     if final_panel_bytes:
+        # Collect character reference images for title panel
+        character_ref_bytes = []
+        for c in characters:
+            fname = f"{slugify(c.name)}.png"
+            char_file = chars_dir / fname
+            if char_file.exists():
+                character_ref_bytes.append(char_file.read_bytes())
+
         comic_layout = create_comic_layout(
-            final_panel_bytes, comic_title, g, logger, PANEL_SIZE)
+            final_panel_bytes, comic_title, g, logger, PANEL_SIZE, character_ref_bytes)
         comic_path = out_root / "comic_final.png"
         comic_layout.save(comic_path, "PNG")
         print(f"   ✓ Final comic saved: {comic_path}")

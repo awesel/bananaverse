@@ -4,7 +4,6 @@ Characters to include: {character_names}.
 Ensure each character matches the provided reference images (identity consistency).
 Place characters in the scene such that they are doing the specified actions without any speech bubbles.
 Art direction: {STYLE_PRESET}.
-Leave visual space for speech bubbles to be added later.
 Do not render any text, captions, or speech bubbles.
 
 IMPORTANT CONTINUITY REQUIREMENTS:

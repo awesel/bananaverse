@@ -5,7 +5,7 @@ Ensure each character matches the provided reference images (identity consistenc
 Place characters in the scene such that they are doing the specified actions.
 Art direction: {STYLE_PRESET}.
 
-{dialogue_instruction}
+Do not add any text, speech bubbles, dialogue, captions, or text elements. Focus only on the visual scene and character placement.
 
 IMPORTANT CONTINUITY REQUIREMENTS:
 - If a previous panel image is provided, maintain visual continuity from that panel
@@ -13,10 +13,3 @@ IMPORTANT CONTINUITY REQUIREMENTS:
 - Ensure everything makes physical sense in relation to the previous panel
 - Characters are allowed to be in different positions than the reference images to maintain story flow
 - Make sure lighting, perspective, and environmental details are consistent with the story progression
-
-DIALOGUE GUIDELINES (if dialogue exists):
-- Place speech bubbles near the likely speaker; avoid covering faces
-- Keep typography clear and high-contrast
-- If there are multiple lines, use multiple bubbles or a stacked bubble
-- Use clean, readable comic-style speech bubbles
-- Ensure bubbles don't interfere with important visual elements

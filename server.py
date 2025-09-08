@@ -72,31 +72,79 @@ def rebuild_live_comic(run_dir: Path) -> None:
 
         # Simple fallback title panel for live updates
         title = "Generating…"
-        canvas = Image.new("RGB", (PANEL_SIZE, PANEL_SIZE), "white")
-        draw = ImageDraw.Draw(canvas)
 
+        # Try to create a better title panel if we have character references available
         try:
-            font = ImageFont.load_default()
-        except:
-            font = None
+            # Check if we have character references in the cache
+            character_refs = list(
+                state.name_to_ref_bytes.values()) if state.name_to_ref_bytes else None
 
-        if font:
-            title_bbox = draw.textbbox((0, 0), title, font=font)
-            title_width = title_bbox[2] - title_bbox[0]
-            title_height = title_bbox[3] - title_bbox[1]
-            title_x = (PANEL_SIZE - title_width) // 2
-            title_y = (PANEL_SIZE - title_height) // 2
+            if character_refs:
+                # Create a simple title panel that hints at character presence
+                canvas = Image.new("RGB", (PANEL_SIZE, PANEL_SIZE), "white")
+                draw = ImageDraw.Draw(canvas)
 
-            padding = 20
-            draw.rectangle([title_x - padding, title_y - padding,
-                           title_x + title_width + padding, title_y + title_height + padding],
-                           fill="black")
-            draw.text((title_x, title_y), title, fill="white", font=font)
+                # Draw a simple background
+                draw.rectangle([0, 0, PANEL_SIZE, PANEL_SIZE], fill="#f0f0f0")
 
-        # Convert to bytes
-        buf = io.BytesIO()
-        canvas.save(buf, format="PNG")
-        title_panel_bytes = buf.getvalue()
+                # Add title text
+                try:
+                    font = ImageFont.load_default()
+                except:
+                    font = None
+
+                if font:
+                    title_bbox = draw.textbbox((0, 0), title, font=font)
+                    title_width = title_bbox[2] - title_bbox[0]
+                    title_height = title_bbox[3] - title_bbox[1]
+                    title_x = (PANEL_SIZE - title_width) // 2
+                    title_y = (PANEL_SIZE - title_height) // 2
+
+                    padding = 20
+                    draw.rectangle([title_x - padding, title_y - padding,
+                                   title_x + title_width + padding, title_y + title_height + padding],
+                                   fill="black")
+                    draw.text((title_x, title_y), title,
+                              fill="white", font=font)
+
+                # Convert to bytes
+                buf = io.BytesIO()
+                canvas.save(buf, format="PNG")
+                title_panel_bytes = buf.getvalue()
+            else:
+                # Fallback to simple text title
+                canvas = Image.new("RGB", (PANEL_SIZE, PANEL_SIZE), "white")
+                draw = ImageDraw.Draw(canvas)
+
+                try:
+                    font = ImageFont.load_default()
+                except:
+                    font = None
+
+                if font:
+                    title_bbox = draw.textbbox((0, 0), title, font=font)
+                    title_width = title_bbox[2] - title_bbox[0]
+                    title_height = title_bbox[3] - title_bbox[1]
+                    title_x = (PANEL_SIZE - title_width) // 2
+                    title_y = (PANEL_SIZE - title_height) // 2
+
+                    padding = 20
+                    draw.rectangle([title_x - padding, title_y - padding,
+                                   title_x + title_width + padding, title_y + title_height + padding],
+                                   fill="black")
+                    draw.text((title_x, title_y), title,
+                              fill="white", font=font)
+
+                # Convert to bytes
+                buf = io.BytesIO()
+                canvas.save(buf, format="PNG")
+                title_panel_bytes = buf.getvalue()
+        except Exception:
+            # Ultimate fallback
+            canvas = Image.new("RGB", (PANEL_SIZE, PANEL_SIZE), "white")
+            buf = io.BytesIO()
+            canvas.save(buf, format="PNG")
+            title_panel_bytes = buf.getvalue()
 
         # Combine with panels manually
         all_panels = [title_panel_bytes] + panel_bytes_list
@@ -373,8 +421,34 @@ def run_pipeline_with_events(story_text: str, out_root: Path, events: "queue.Que
                 f"No scene reference available for panel {p.index}")
 
         # Gather ref images for characters in this panel
-        char_ref_imgs = [state.name_to_ref_bytes[n.lower()]
-                         for n in p.characterNames if n.lower() in state.name_to_ref_bytes]
+        char_ref_imgs = []
+        missing_chars = []
+        for char_name in p.characterNames:
+            char_key = char_name.lower()
+            if char_key in state.name_to_ref_bytes:
+                char_ref_imgs.append(state.name_to_ref_bytes[char_key])
+            else:
+                missing_chars.append(char_name)
+
+        if missing_chars:
+            print(
+                f"WARNING: Missing character references for panel {p.index}: {missing_chars}")
+            print(
+                f"Available characters in cache: {list(state.name_to_ref_bytes.keys())}")
+            events.put(
+                {"type": "warning", "message": f"Panel {p.index}: Missing character refs for {missing_chars}"})
+
+            # Try to reload missing characters from disk as fallback
+            for char_name in missing_chars:
+                fname = f"{slugify(char_name)}.png"
+                char_file = chars_dir / fname
+                if char_file.exists():
+                    char_png = char_file.read_bytes()
+                    state.name_to_ref_bytes[char_name.lower()] = char_png
+                    char_ref_imgs.append(char_png)
+                    print(f"Reloaded missing character from disk: {char_name}")
+                    events.put(
+                        {"type": "info", "message": f"Reloaded character {char_name} from disk"})
 
         # Add previous panel for continuity if available
         ref_images_with_continuity = char_ref_imgs.copy()
@@ -476,8 +550,30 @@ def run_pipeline_with_events(story_text: str, out_root: Path, events: "queue.Que
             final_panel_bytes.append(panel_path.read_bytes())
 
     if final_panel_bytes:
+        # Collect character reference images for title panel
+        character_ref_bytes = []
+        for c in characters:
+            fname = f"{slugify(c.name)}.png"
+            char_file = chars_dir / fname
+            if char_file.exists():
+                character_ref_bytes.append(char_file.read_bytes())
+
+        # Also try to get from cache (in case of uploaded custom sprites)
+        for char_name in state.name_to_ref_bytes:
+            if char_name in [c.name.lower() for c in characters]:
+                character_ref_bytes.append(state.name_to_ref_bytes[char_name])
+
+        # Remove duplicates while preserving order
+        seen = set()
+        unique_char_refs = []
+        for ref_bytes in character_ref_bytes:
+            ref_hash = hash(ref_bytes)
+            if ref_hash not in seen:
+                seen.add(ref_hash)
+                unique_char_refs.append(ref_bytes)
+
         comic_layout = create_comic_layout(
-            final_panel_bytes, comic_title, g, logger, PANEL_SIZE)
+            final_panel_bytes, comic_title, g, logger, PANEL_SIZE, unique_char_refs)
         comic_path = out_root / "comic_final.png"
         comic_layout.save(comic_path, "PNG")
 
@@ -625,6 +721,30 @@ def api_continue_generation():
         return jsonify({"error": "Not the current run"}), 400
 
 
+@app.route("/api/debug/cache_state")
+def api_debug_cache_state():
+    """Debug endpoint to check current cache state."""
+    if not state.current_run_dir:
+        return jsonify({"error": "No active run"}), 400
+
+    debug_info = {
+        "current_run": str(state.current_run_dir.name) if state.current_run_dir else None,
+        "characters_in_cache": list(state.name_to_ref_bytes.keys()),
+        "filename_to_char_mapping": state.filename_to_char_name,
+        "cache_sizes": {char: len(data) for char, data in state.name_to_ref_bytes.items()},
+        "files_on_disk": []
+    }
+
+    # Check what character files exist on disk
+    if state.current_run_dir:
+        chars_dir = state.current_run_dir / "characters"
+        if chars_dir.exists():
+            debug_info["files_on_disk"] = [
+                f.name for f in chars_dir.glob("*.png")]
+
+    return jsonify(debug_info)
+
+
 @app.route("/api/upload_sprite", methods=["POST"])
 def api_upload_sprite():
     """Upload a custom sprite to replace an existing character sprite."""
@@ -688,6 +808,22 @@ def api_upload_sprite():
         if filename in state.filename_to_char_name:
             char_name = state.filename_to_char_name[filename]
             state.name_to_ref_bytes[char_name] = png_bytes
+            print(
+                f"Updated cache for character: {char_name} (filename: {filename})")
+        else:
+            print(
+                f"WARNING: Filename {filename} not found in character mapping")
+            print(
+                f"Available mappings: {list(state.filename_to_char_name.keys())}")
+            # Fallback: try to find by matching the filename without extension
+            name_from_file = filename.replace(
+                ".png", "").replace("-", " ").title()
+            for mapped_filename, mapped_char_name in state.filename_to_char_name.items():
+                if mapped_filename == filename:
+                    state.name_to_ref_bytes[mapped_char_name] = png_bytes
+                    print(
+                        f"Fallback successful: Updated cache for {mapped_char_name}")
+                    break
 
         # Trigger a comic rebuild to use the new sprite
         if state.current_run_dir == run_dir:
@@ -695,9 +831,31 @@ def api_upload_sprite():
             state.events.put({"type": "comic_rebuilt"})
             state.events.put({"type": "sprite_uploaded", "filename": filename})
 
-        return jsonify({"success": True, "message": f"Sprite '{filename}' uploaded successfully"})
+        # Validate the upload was successful by checking both file and cache
+        validation_success = True
+        validation_messages = []
+
+        if not target_file.exists():
+            validation_success = False
+            validation_messages.append("File was not saved to disk")
+
+        if filename in state.filename_to_char_name:
+            char_name = state.filename_to_char_name[filename]
+            if char_name not in state.name_to_ref_bytes:
+                validation_success = False
+                validation_messages.append(
+                    f"Character '{char_name}' not found in cache")
+        else:
+            validation_success = False
+            validation_messages.append("Filename mapping not found")
+
+        if validation_success:
+            return jsonify({"success": True, "message": f"Sprite '{filename}' uploaded successfully"})
+        else:
+            return jsonify({"success": False, "warning": f"Upload completed but validation failed: {', '.join(validation_messages)}"})
 
     except Exception as e:
+        print(f"Sprite upload error: {e}")
         return jsonify({"error": f"Failed to process image: {str(e)}"}), 500
 
 

@@ -346,6 +346,9 @@
       .upload-status.success {
         color: #45b7b8;
       }
+      .upload-status.warning {
+        color: #ff9800;
+      }
       .upload-status.error {
         color: #e74c3c;
       }
@@ -920,18 +923,33 @@
             statusEl.textContent = "✓ Uploaded successfully";
             statusEl.className = "upload-status success";
 
-            // Update the preview image
-            const previewImg = document.querySelector(
+            // Update the preview image - try multiple selectors to find the right image
+            let previewImg = document.querySelector(
               `img[alt="${filename.replace(".png", "")}"]`
             );
+            if (!previewImg) {
+              // Fallback: look for any image with the character name in the alt attribute
+              const characterName = filename
+                .replace(".png", "")
+                .replace(/-/g, " ");
+              previewImg = document.querySelector(
+                `img[alt*="${characterName}"]`
+              );
+            }
             if (previewImg) {
               previewImg.src =
                 toURL(`characters/${filename}`) + "&_ts=" + Date.now();
+            } else {
+              console.warn(`Could not find preview image for ${filename}`);
             }
 
             log(`Sprite uploaded: ${filename}`);
+          } else if (result.warning) {
+            statusEl.textContent = "⚠ " + result.warning;
+            statusEl.className = "upload-status warning";
+            log(`Sprite upload warning for ${filename}: ${result.warning}`);
           } else {
-            statusEl.textContent = "✗ " + result.error;
+            statusEl.textContent = "✗ " + (result.error || "Upload failed");
             statusEl.className = "upload-status error";
           }
         } catch (error) {
