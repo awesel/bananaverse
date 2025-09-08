@@ -2,7 +2,7 @@ This is my project for the Nano Banana Hackathon from Google DeepMind. I made a 
 
 Features
 - You can enter a story, or have AI generate a story about a concept. I like to have the AI generate a story where a student and teacher have a conversation about something I want to learn.
-- It will generate sprites for scenes and characters. You can override any of these if you wish to include yourself or one of your drawings in the story
+- It will generate sprites for scenes and characters. You can override any of these if you wish to include yourself or one of your drawings in the story. This step is what makes the comics have continuity instead of recreating each character in each panel
 - It will then generate panels and stitch them together live.
 
 To run:
